@@ -40,10 +40,10 @@ const DEFAULT_CONFIG = {
 
 const GLOBAL_SETTINGS = {
     // ── IP 检测 ──
-    CONCURRENT_CHECKS: 2,        // 维护任务推荐低并发；前端批量检测也不宜过高
+    CONCURRENT_CHECKS: 5,        // 后端维护检测请求并发；每个请求最多 2 个目标
     CHECK_TIMEOUT: 5000,         // 单次 ProxyIP 检测超时(ms)
-    MAX_CHECK_PER_DOMAIN: 100,   // 每个域名单轮最多检测多少个候选
-    CHECK_BATCH_SIZE: 50,        // 每批交给外部接口检测的候选数
+    MAX_CHECK_PER_DOMAIN: 40,    // 每个域名单轮最多检测多少个候选，默认 40 = 20 个双目标请求
+    CHECK_BATCH_SIZE: 2,         // 外部接口限制：每次最多 2 个 proxyip 逗号批量目标
     MAINTAIN_DOMAIN_LIMIT: 5,    // 兼容旧变量：单轮最多维护域名数
     MAINTAIN_MAX_DOMAINS: 5,     // 动态预算下单轮最多维护域名数
     MAINTAIN_SUBREQUEST_BUDGET: 45, // 单轮维护预估子请求预算，Free Worker 建议 45 以下
@@ -1403,9 +1403,9 @@ function createConfig(env, request = null) {
     config.ipInfoEnabled = env.IP_INFO_ENABLED === 'true';
     config.ipInfoApi = env.IP_INFO_API || DEFAULT_CONFIG.ipInfoApi;
 
-    config.maxCheckPerDomain = clampInt(env.MAX_CHECK_PER_DOMAIN, 1, 500, GLOBAL_SETTINGS.MAX_CHECK_PER_DOMAIN);
-    config.checkBatchSize = clampInt(env.CHECK_BATCH_SIZE, 1, 50, GLOBAL_SETTINGS.CHECK_BATCH_SIZE);
-    config.checkConcurrency = clampInt(env.CHECK_CONCURRENCY, 1, 5, GLOBAL_SETTINGS.CONCURRENT_CHECKS);
+    config.maxCheckPerDomain = clampInt(env.MAX_CHECK_PER_DOMAIN, 1, 200, GLOBAL_SETTINGS.MAX_CHECK_PER_DOMAIN);
+    config.checkBatchSize = clampInt(env.CHECK_BATCH_SIZE, 1, 2, GLOBAL_SETTINGS.CHECK_BATCH_SIZE);
+    config.checkConcurrency = clampInt(env.CHECK_CONCURRENCY, 1, 10, GLOBAL_SETTINGS.CONCURRENT_CHECKS);
     config.checkCacheEnabled = String(env.CHECK_CACHE_ENABLED || '').toLowerCase() === 'true';
     config.checkCacheTtlMinutes = clampInt(env.CHECK_CACHE_TTL_MINUTES, 0, 1440, GLOBAL_SETTINGS.CHECK_CACHE_TTL_MINUTES);
     config.checkFailThreshold = clampInt(env.CHECK_FAIL_THRESHOLD, 1, 20, GLOBAL_SETTINGS.CHECK_FAIL_THRESHOLD);
@@ -2163,8 +2163,30 @@ async function checkProxyIPBatch(addrs, config) {
     const targets = uniqueStrings((addrs || []).map(a => normalizeCheckAddr(String(a || '').trim())).filter(Boolean));
     if (!targets.length) return [];
 
-    // 你的 CHECK_API / CHECK_API_BACKUP 本身支持逗号批量：/check?proxyip=a,b,c。
-    // 因此即使未配置 CHECK_BATCH_API，也默认走逗号 GET 批量，而不是逐个检测。
+    const maxBatchSize = Math.max(1, Math.min(2, Number(config.checkBatchSize || GLOBAL_SETTINGS.CHECK_BATCH_SIZE)));
+    const concurrency = Math.max(1, Math.min(10, Number(config.checkConcurrency || GLOBAL_SETTINGS.CONCURRENT_CHECKS)));
+    const chunks = [];
+    for (let i = 0; i < targets.length; i += maxBatchSize) {
+        chunks.push(targets.slice(i, i + maxBatchSize));
+    }
+
+    const allResults = new Array(chunks.length);
+    let nextIndex = 0;
+
+    async function runNextChunk() {
+        while (nextIndex < chunks.length) {
+            const index = nextIndex++;
+            allResults[index] = await checkProxyIPBatchChunk(chunks[index], config);
+        }
+    }
+
+    await Promise.all(Array.from({ length: Math.min(concurrency, chunks.length) }, runNextChunk));
+    return allResults.flat();
+}
+
+async function checkProxyIPBatchChunk(targets, config) {
+    // CHECK_API / CHECK_API_BACKUP 支持逗号小批量：/check?proxyip=a,b。
+    // 每个 chunk 已在 checkProxyIPBatch() 中强制限制为最多 2 个目标。
     const primaryBatchApi = config.checkBatchApi || config.checkApi;
     const backupBatchApi = config.checkBatchApiBackup || config.checkApiBackup;
 
@@ -2174,10 +2196,10 @@ async function checkProxyIPBatch(addrs, config) {
     if (backupBatchApi) {
         const backup = await checkProxyIPBatchOnce(targets, backupBatchApi, config.checkApiBackupToken, config.checkBatchApiBackup ? 'backup-batch' : 'backup-comma-batch');
         if (backup && backup.some(r => r?.success === true)) return backup;
-        return backup || primary || targets.map(t => buildCheckFailure(t, '主备批量检测接口均未通过', 'batch'));
+        return backup || primary || targets.map(t => buildCheckFailure(t, '主备小批量检测接口均未通过', 'batch'));
     }
 
-    return primary || targets.map(t => buildCheckFailure(t, '批量检测接口失败', 'main-batch'));
+    return primary || targets.map(t => buildCheckFailure(t, '小批量检测接口失败', 'main-batch'));
 }
 
 function makeAddrWithPort(value, port) {
@@ -2406,7 +2428,7 @@ async function maintainRecordsCommon(options) {
             addLog(`⚠️ 当前 DNS 记录数 ${currentTargets.length} 超过未配置批量检测接口时的安全预算 ${checkBudget}，本轮仅检测前 ${checkBudget} 个`);
         }
         const currentTargetsToCheck = hasBatchCheck ? currentTargets : currentTargets.slice(0, checkBudget);
-        report.currentCheckBatches = (report.currentCheckBatches || 0) + 1;
+        report.currentCheckBatches = (report.currentCheckBatches || 0) + Math.ceil(currentTargetsToCheck.length / Math.max(1, Number(config.checkBatchSize || GLOBAL_SETTINGS.CHECK_BATCH_SIZE)));
         const currentResults = await checkProxyIPBatch(currentTargetsToCheck, config);
         const currentMap = buildResultMap(currentTargetsToCheck, currentResults);
 
@@ -2482,7 +2504,7 @@ async function maintainRecordsCommon(options) {
         return;
     }
 
-    addLog(`需补充: ${target.minActive - validIPs.length} 个；批量大小 ${batchSize}，本域名单轮最多检测 ${maxChecks} 个候选${hasBatchCheck ? '' : '（未配置批量检测接口，已按请求预算限制）'}`);
+    addLog(`需补充: ${target.minActive - validIPs.length} 个；每组最多 ${batchSize} 个目标，检测请求并发 ${config.checkConcurrency || GLOBAL_SETTINGS.CONCURRENT_CHECKS}，本域名单轮最多检测 ${maxChecks} 个候选`);
     const candidates = maxChecks > 0 ? await getCandidateIPs(env, target, addLog, poolKey) : [];
 
     const candidateQueue = [];
@@ -2500,12 +2522,12 @@ async function maintainRecordsCommon(options) {
     for (let i = 0; i < candidateQueue.length && plannedActiveCount() < target.minActive; i += batchSize) {
         const batch = candidateQueue.slice(i, i + batchSize);
         if (!batch.length) break;
-        addLog(`📡 批量检测候选第 ${Math.floor(i / batchSize) + 1} 批：${batch.length} 个`);
+        addLog(`📡 小批量检测候选第 ${Math.floor(i / batchSize) + 1} 组：${batch.length} 个`);
         report.candidateCheckBatches = (report.candidateCheckBatches || 0) + 1;
         const results = await checkProxyIPBatch(batch, config);
         const resultMap = buildResultMap(batch, results);
         const successCount = results.filter(r => r?.success === true).length;
-        addLog(`📊 第 ${Math.floor(i / batchSize) + 1} 批结果：success=true ${successCount}，success=false ${batch.length - successCount}`);
+        addLog(`📊 第 ${Math.floor(i / batchSize) + 1} 组结果：success=true ${successCount}，success=false ${batch.length - successCount}`);
 
         checkedCount += batch.length;
         for (const ipPort of batch) {
