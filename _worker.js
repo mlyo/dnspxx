@@ -1,11 +1,10 @@
 /**
- * DDNS Pro v12 · Refactored DNS Maintenance System
- * Cloudflare Worker / Pages Advanced Mode compatible.
+ * DDNS Pro v13 · Split DNS Maintenance API
+ * Cloudflare Worker only. Frontend is deployed separately as static assets.
  */
 
-const VERSION = '12.0.0-refactor';
+const VERSION = '14.0.0-split-redirect';
 const JSON_TYPE = 'application/json; charset=UTF-8';
-const HTML_TYPE = 'text/html; charset=UTF-8';
 const CHECK_CACHE_KEY = 'check_cache_v2';
 const CHECK_FAIL_KEY = 'check_fail_v2';
 const MAINTAIN_CURSOR_KEY = 'maintain_cursor_v2';
@@ -15,7 +14,6 @@ const DEFAULTS = Object.freeze({
   checkApiBackup: 'https://api.090227.xyz/check?proxyip=',
   dohApi: 'https://cloudflare-dns.com/dns-query',
   adminOrigin: '',
-  homeMode: 'nginx',
   dnsTtl: 60,
   proxied: false,
   defaultMinActive: 3,
@@ -65,10 +63,6 @@ function safeJSONParse(value, fallback) {
   try { return value ? JSON.parse(value) : fallback; } catch { return fallback; }
 }
 
-function escapeHtml(value) {
-  return String(value ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
-}
-
 async function readJson(request) {
   try { return await request.json(); } catch { return null; }
 }
@@ -100,8 +94,6 @@ function createConfig(env, request = null) {
     checkBatchApiBackup: envText(env, 'CHECK_BATCH_API_BACKUP'),
     dohApi: envText(env, 'DOH_API', DEFAULTS.dohApi),
     adminOrigin: envText(env, 'ADMIN_ORIGIN', DEFAULTS.adminOrigin).replace(/\/$/, ''),
-    homeMode: envText(env, 'HOME_MODE', DEFAULTS.homeMode).toLowerCase(),
-    homeUrl: envText(env, 'HOME_URL'),
     dnsTtl: toInt(env?.DNS_TTL, DEFAULTS.dnsTtl, 60, 86400),
     proxied: toBool(env?.DNS_PROXIED, DEFAULTS.proxied),
     defaultMinActive: toInt(env?.DEFAULT_MIN_ACTIVE, DEFAULTS.defaultMinActive, 1, 200),
@@ -145,10 +137,15 @@ function requireKV(env) {
   return store;
 }
 
+function originOf(value) {
+  const text = String(value || '').trim();
+  if (!text) return '';
+  try { return new URL(text).origin; } catch { return text.replace(/\/$/, ''); }
+}
 function getAllowedOrigins(env, config) {
   const raw = config?.allowedOrigins || envText(env, 'ALLOWED_ORIGINS');
-  if (raw) return raw.split(',').map(s => s.trim()).filter(Boolean);
-  return config?.adminOrigin ? [config.adminOrigin] : [];
+  if (raw) return raw.split(',').map(s => s.trim()).filter(Boolean).map(originOf);
+  return config?.adminOrigin ? [originOf(config.adminOrigin)] : [];
 }
 function getCorsOrigin(request, env, config) {
   const origin = request.headers.get('Origin') || '';
@@ -216,59 +213,82 @@ function authCookie(token, maxAge = 86400) {
   return `ddns_auth=${encodeURIComponent(token)}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=${maxAge}`;
 }
 
-function htmlLogin() {
-  return `<!doctype html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>DDNS Pro 登录</title><style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#0f172a;color:#e5e7eb;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.card{width:min(420px,calc(100vw - 32px));background:#111827;border:1px solid #334155;border-radius:18px;padding:24px;box-shadow:0 20px 60px rgba(0,0,0,.35)}h1{margin:0 0 8px}.hint{color:#94a3b8;line-height:1.7}input,button{width:100%;box-sizing:border-box;border-radius:12px;padding:12px 14px;font:inherit}input{background:#020617;color:#e5e7eb;border:1px solid #475569}button{margin-top:12px;border:0;background:#2563eb;color:white;font-weight:700;cursor:pointer}.err{min-height:22px;color:#fca5a5;margin-top:10px}</style></head><body><form class="card" id="form"><h1>DDNS Pro</h1><p class="hint">输入 Worker 环境变量 AUTH_KEY 登录后台。</p><input id="password" name="password" type="password" autocomplete="current-password" placeholder="AUTH_KEY" autofocus><button>登录</button><div class="err" id="err"></div></form><script>document.getElementById('form').addEventListener('submit',async e=>{e.preventDefault();const err=document.getElementById('err');err.textContent='';const password=document.getElementById('password').value;const res=await fetch('/login',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({password})});if(res.ok)location.href='/admin/';else err.textContent='登录失败，请检查 AUTH_KEY';});</script></body></html>`;
+
+async function handleApiHome(config) {
+  return ok({
+    name: 'DDNS Pro API',
+    version: config.version,
+    frontend: config.adminOrigin || '',
+  });
 }
-function htmlNginxPage() {
-  return `<!doctype html><html><head><title>Welcome to nginx!</title><style>body{width:35em;margin:0 auto;font-family:Tahoma,Verdana,Arial,sans-serif}@media(max-width:720px){body{width:auto;margin:24px}}</style></head><body><h1>Welcome to nginx!</h1><p>If you see this page, the web server is successfully installed and working. Further configuration is required.</p><p>For online documentation and support please refer to <a href="http://nginx.org/">nginx.org</a>.</p><p><em>Thank you for using nginx.</em></p></body></html>`;
-}
-async function handleHome(request, config) {
-  if (config.homeMode === 'blank') return new Response('', { status: 204, headers: { 'Cache-Control': 'no-store' } });
-  if (config.homeMode === '404') return new Response('Not Found', { status: 404, headers: { 'Content-Type': 'text/plain;charset=UTF-8' } });
-  if (config.homeMode === 'redirect' && config.homeUrl) return Response.redirect(config.homeUrl, 302);
-  return new Response(htmlNginxPage(), { headers: { 'Content-Type': HTML_TYPE, 'Cache-Control': 'no-store' } });
-}
-async function handleLogin(request, config) {
-  if (!config.authKey) return new Response(htmlLogin().replace('输入 Worker 环境变量 AUTH_KEY 登录后台。', 'AUTH_KEY 未配置，后台处于开放模式。'), { headers: { 'Content-Type': HTML_TYPE, 'Cache-Control': 'no-store' } });
-  if (request.method !== 'POST') return new Response(htmlLogin(), { headers: { 'Content-Type': HTML_TYPE, 'Cache-Control': 'no-store' } });
+
+async function handleAuthLogin(request, config) {
+  if (!config.authKey) {
+    return ok({ authenticated: true, authRequired: false, message: 'AUTH_KEY 未配置，API 未启用访问保护。' });
+  }
+
   let password = '';
   const type = request.headers.get('Content-Type') || '';
   if (type.includes('application/json')) {
     const body = await readJson(request);
-    password = String(body?.password || body?.key || '').trim();
+    password = String(body?.password || body?.key || body?.authKey || '').trim();
   } else {
     password = String(new URLSearchParams(await request.text()).get('password') || '').trim();
   }
-  if (password !== config.authKey) return fail('BAD_AUTH', 'AUTH_KEY 错误', 401);
+
+  if (password !== config.authKey) {
+    return fail('BAD_AUTH', 'AUTH_KEY 错误', 401);
+  }
+
   const token = await sessionToken(request, config);
-  return json({ success: true, data: { redirect: '/admin/' } }, 200, { 'Set-Cookie': authCookie(token) });
+  return json({ success: true, data: { authenticated: true, authRequired: true } }, 200, {
+    'Set-Cookie': authCookie(token),
+  });
 }
 
-async function serveAsset(request, env, config) {
-  const url = new URL(request.url);
-  let path = url.pathname;
-  if (path === '/admin') return Response.redirect(url.origin + '/admin/', 302);
-  if (path === '/admin/' || path === '/admin') path = '/admin.html';
-  else path = path.replace(/^\/admin\//, '/');
+function handleAuthLogout() {
+  return json({ success: true, data: { authenticated: false } }, 200, {
+    'Set-Cookie': 'ddns_auth=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Strict',
+  });
+}
 
-  if (env?.ASSETS?.fetch) {
-    const assetUrl = new URL(request.url);
-    assetUrl.pathname = path;
-    const assetReq = new Request(assetUrl.toString(), request);
-    const res = await env.ASSETS.fetch(assetReq);
-    if (res.status !== 404) {
-      const headers = new Headers(res.headers);
-      headers.set('Cache-Control', path === '/admin.html' ? 'no-store' : 'public, max-age=300');
-      return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
+function frontendNotServedResponse(config) {
+  return fail(
+    'FRONTEND_NOT_SERVED_BY_WORKER',
+    config.adminOrigin
+      ? `前端已分离，请打开 ADMIN_ORIGIN：${config.adminOrigin}`
+      : '前端已分离：Worker 不提供 /admin 静态资源。请部署 frontend/ 到 Pages，或配置 ADMIN_ORIGIN 用于跳转。',
+    404
+  );
+}
+
+function buildFrontendRedirectUrl(requestUrl, config) {
+  if (!config.adminOrigin) return '';
+
+  const adminBase = new URL(config.adminOrigin.endsWith('/') ? config.adminOrigin : `${config.adminOrigin}/`);
+  const target = new URL(adminBase.href);
+
+  if (requestUrl.pathname === '/login' || requestUrl.pathname === '/login.html') {
+    target.pathname = joinUrlPath(adminBase.pathname, 'login.html');
+    target.searchParams.set('redirect', '/admin/');
+  } else {
+    target.pathname = joinUrlPath(adminBase.pathname, 'admin/');
+    for (const [key, value] of requestUrl.searchParams.entries()) {
+      if (key !== 'api') target.searchParams.set(key, value);
     }
   }
 
-  if (config.adminOrigin) {
-    const upstream = await fetchWithTimeout(config.adminOrigin + path + url.search, { cf: { cacheTtl: path === '/admin.html' ? 0 : 300 } }, 8000);
-    if (upstream.ok) return upstream;
-  }
-  return new Response('Admin asset not found. Deploy this project with Pages assets or set ADMIN_ORIGIN.', { status: 404 });
+  target.searchParams.set('api', requestUrl.origin);
+  return target.href;
 }
+
+function joinUrlPath(basePath, childPath) {
+  const base = String(basePath || '/').replace(/\/+$/, '');
+  const child = String(childPath || '').replace(/^\/+/, '');
+  const path = `${base}/${child}`.replace(/\/+/g, '/');
+  return path.startsWith('/') ? path : `/${path}`;
+}
+
 
 function parseTargets(raw, defaultMinActive) {
   return String(raw || '').split(/[\n,;]+/).map(s => s.trim()).filter(Boolean).map((entry, index) => {
@@ -1163,6 +1183,8 @@ const ROUTES = {
   '/api/health': (url, req, env, config) => handleHealth(env, config),
   '/api/config': (url, req, env, config) => handleConfig(env, config),
   '/api/auth/me': () => ok({ authenticated: true }),
+  '/api/auth/login': (url, req, env, config) => handleAuthLogin(req, config),
+  '/api/auth/logout': () => handleAuthLogout(),
   '/api/pools': (url, req, env) => handlePools(env),
   '/api/get-pool': (url, req, env) => handleGetPool(url, env),
   '/api/save-pool': (url, req, env, config) => handleSavePool(req, env, config),
@@ -1184,7 +1206,7 @@ const ROUTES = {
   '/api/delete-record': (url, req, env, config) => handleDeleteRecord(url, config),
   '/api/maintain': (url, req, env, config) => handleMaintain(url, env, config),
 };
-const POST_ONLY = new Set(['/api/save-pool','/api/create-pool','/api/delete-pool','/api/clear-trash','/api/restore-from-trash','/api/load-remote-url','/api/resolve-batch','/api/check','/api/save-domain-pool-mapping','/api/add-a-record','/api/delete-record','/api/maintain']);
+const POST_ONLY = new Set(['/api/auth/login','/api/auth/logout','/api/save-pool','/api/create-pool','/api/delete-pool','/api/clear-trash','/api/restore-from-trash','/api/load-remote-url','/api/resolve-batch','/api/check','/api/save-domain-pool-mapping','/api/add-a-record','/api/delete-record','/api/maintain']);
 async function handleApi(request, env, config) {
   const url = new URL(request.url);
   const handler = ROUTES[url.pathname];
@@ -1198,28 +1220,37 @@ export default {
   async fetch(request, env, ctx) {
     const config = createConfig(env, request);
     const url = new URL(request.url);
+
     if (request.method === 'OPTIONS') return corsPreflight(request, env, config);
     if (url.protocol === 'http:') return Response.redirect(url.href.replace(/^http:/, 'https:'), 301);
     if (url.pathname === '/favicon.ico') return new Response(null, { status: 204 });
     if (url.pathname === '/robots.txt') return new Response('User-agent: *\nDisallow: /\n', { headers: { 'Content-Type': 'text/plain; charset=UTF-8' } });
-    if (url.pathname === '/') return handleHome(request, config);
-    if (url.pathname === '/login') return handleLogin(request, config);
-    if (url.pathname === '/logout') return new Response('退出成功', { status: 302, headers: { Location: '/login', 'Set-Cookie': 'ddns_auth=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Strict' } });
 
-    const needsAuth = url.pathname.startsWith('/api/') || url.pathname === '/admin' || url.pathname.startsWith('/admin/');
-    if (needsAuth) {
+    // 真正前后端分离：Worker 不托管前端文件；/admin 与 /login 只做轻量 302 跳转到独立前端。
+    if (url.pathname === '/') return withCors(await handleApiHome(config), request, env, config);
+    if (url.pathname === '/admin' || url.pathname.startsWith('/admin/') || url.pathname === '/login' || url.pathname === '/login.html') {
+      const redirectUrl = buildFrontendRedirectUrl(url, config);
+      if (redirectUrl) return Response.redirect(redirectUrl, 302);
+      return withCors(frontendNotServedResponse(config), request, env, config);
+    }
+
+    if (!url.pathname.startsWith('/api/')) {
+      return withCors(fail('NOT_FOUND', '接口不存在；前端静态资源请部署 frontend/，不要部署到 Worker。', 404), request, env, config);
+    }
+
+    const publicApi = url.pathname === '/api/auth/login' || url.pathname === '/api/version' || url.pathname === '/api/health';
+    if (!publicApi) {
       const auth = await checkAuth(request, url, config);
       if (auth.enabled && !auth.ok) {
-        if (url.pathname.startsWith('/api/')) return withCors(fail('UNAUTHORIZED', '未登录或登录已过期', 401), request, env, config);
-        return Response.redirect(url.origin + '/login', 302);
+        return withCors(fail('UNAUTHORIZED', '未登录或登录已过期', 401), request, env, config);
       }
-      const response = url.pathname.startsWith('/api/') ? await handleApi(request, env, config) : await serveAsset(request, env, config);
+      const response = await handleApi(request, env, config);
       const headers = new Headers(response.headers);
       if (auth.setCookie) headers.set('Set-Cookie', authCookie(auth.token));
       return withCors(new Response(response.body, { status: response.status, statusText: response.statusText, headers }), request, env, config);
     }
 
-    return new Response('Not Found', { status: 404 });
+    return withCors(await handleApi(request, env, config), request, env, config);
   },
   async scheduled(event, env, ctx) {
     const config = createConfig(env);
