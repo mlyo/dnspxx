@@ -165,15 +165,34 @@ function getAuthCandidateFromRequest(request, url) {
     return { bearer, xAuth, qKey, cKey };
 }
 
-function checkRequestAuth(request, url, env) {
+async function sha256Hex(text) {
+    const data = new TextEncoder().encode(text);
+    const hash = await crypto.subtle.digest('SHA-256', data);
+    return [...new Uint8Array(hash)].map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+function getSessionSecret(env) {
+    return (env.SESSION_SECRET || env.AUTH_SECRET || env.AUTH_KEY || '').trim();
+}
+
+async function createSessionToken(request, env) {
+    const requiredKey = (env.AUTH_KEY || '').trim();
+    const userAgent = request.headers.get('User-Agent') || '';
+    return await sha256Hex(`${requiredKey}:${userAgent}:${getSessionSecret(env)}`);
+}
+
+async function checkRequestAuth(request, url, env) {
     const requiredKey = (env.AUTH_KEY || '').trim();
     if (!requiredKey) {
         return { enabled: false, ok: true, shouldSetCookie: false };
     }
 
     const { bearer, xAuth, qKey, cKey } = getAuthCandidateFromRequest(request, url);
-    const ok = bearer === requiredKey || xAuth === requiredKey || qKey === requiredKey || cKey === requiredKey;
-    const shouldSetCookie = ok && qKey === requiredKey && cKey !== requiredKey;
+    const sessionToken = await createSessionToken(request, env);
+    const directOk = bearer === requiredKey || xAuth === requiredKey || qKey === requiredKey;
+    const cookieOk = cKey === sessionToken || cKey === requiredKey;
+    const ok = directOk || cookieOk;
+    const shouldSetCookie = ok && (directOk || cKey === requiredKey || cKey !== sessionToken);
     return { enabled: true, ok, shouldSetCookie };
 }
 
@@ -182,8 +201,10 @@ function unauthorizedResponse(url) {
     if (isApi) {
         return jsonResponse({
             success: false,
-            error: '未授权',
-            message: '需要提供 AUTH_KEY'
+            error: {
+                code: 'UNAUTHORIZED',
+                message: '未登录或登录已过期'
+            }
         }, 401);
     }
     // 页面：给出最小可理解指引
@@ -211,6 +232,36 @@ function unauthorizedResponse(url) {
     return new Response(html, { status: 401, headers: { 'Content-Type': 'text/html;charset=UTF-8' } });
 }
 
+
+function htmlNginxPage(hostname = '') {
+    return `<!DOCTYPE html>
+<html>
+<head><title>Welcome to nginx!</title><style>body{width:35em;margin:0 auto;font-family:Tahoma,Verdana,Arial,sans-serif}</style></head>
+<body>
+<h1>Welcome to nginx!</h1>
+<p>If you see this page, the web server is successfully installed and working. Further configuration is required.</p>
+<p>For online documentation and support please refer to <a href="http://nginx.org/">nginx.org</a>.</p>
+<p><em>Thank you for using nginx.</em></p>
+</body>
+</html>`;
+}
+
+async function handleHomePage(request, env) {
+    const url = new URL(request.url);
+    const mode = (env.HOME_MODE || 'nginx').toLowerCase();
+    if (mode === 'blank') return new Response('', { status: 204, headers: { 'Cache-Control': 'no-store' } });
+    if (mode === '404') return new Response('Not Found', { status: 404, headers: { 'Content-Type': 'text/plain;charset=UTF-8', 'Cache-Control': 'no-store' } });
+    if (mode === 'redirect' && env.HOME_URL) return Response.redirect(env.HOME_URL, 302);
+    if (mode === 'proxy' && env.HOME_URL) {
+        try {
+            const target = new URL(env.HOME_URL);
+            const headers = new Headers(request.headers);
+            headers.set('Host', target.host);
+            return await fetch(target.origin + url.pathname + url.search, { method: request.method, headers, body: request.body });
+        } catch (e) {}
+    }
+    return new Response(htmlNginxPage(url.hostname), { status: 200, headers: { 'Content-Type': 'text/html;charset=UTF-8', 'Cache-Control': 'no-store' } });
+}
 
 function htmlLoginPage() {
     return new Response(`<!doctype html>
@@ -268,8 +319,9 @@ async function handleLogin(request, env) {
         }
         if (password === requiredKey) {
             const headers = new Headers({ 'Content-Type': 'application/json;charset=UTF-8' });
-            headers.set('Set-Cookie', `ddns_auth=${encodeURIComponent(requiredKey)}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=86400`);
-            return new Response(JSON.stringify({ success: true }), { status: 200, headers });
+            const token = await createSessionToken(request, env);
+            headers.set('Set-Cookie', `ddns_auth=${encodeURIComponent(token)}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=86400`);
+            return new Response(JSON.stringify({ success: true, data: { redirect: '/admin/' } }), { status: 200, headers });
         }
         return jsonResponse({ success: false, error: 'AUTH_KEY 错误' }, 401);
     }
@@ -293,19 +345,19 @@ async function handleAdminAssets(request, env) {
     const url = new URL(request.url);
     const origin = getAdminOrigin(env);
     let assetPath = url.pathname.replace(/^\/admin\/?/, '/');
-    if (!assetPath || assetPath === '/') assetPath = '/index.html';
+    if (!assetPath || assetPath === '/') assetPath = '/admin.html';
 
     let upstream = await fetch(origin + assetPath + url.search, {
         headers: { 'User-Agent': request.headers.get('User-Agent') || 'Mozilla/5.0' },
-        cf: { cacheTtl: assetPath === '/index.html' ? 0 : 300 }
+        cf: { cacheTtl: assetPath === '/admin.html' ? 0 : 300 }
     });
 
     if (upstream.status === 404 && !assetPath.includes('.')) {
-        upstream = await fetch(origin + '/index.html', { cf: { cacheTtl: 0 } });
+        upstream = await fetch(origin + '/admin.html', { cf: { cacheTtl: 0 } });
     }
 
     const headers = new Headers(upstream.headers);
-    if (assetPath === '/index.html') headers.set('Cache-Control', 'no-store');
+    if (assetPath === '/admin.html') headers.set('Cache-Control', 'no-store');
     else headers.set('Cache-Control', 'public, max-age=300');
     headers.delete('Content-Security-Policy');
     headers.delete('X-Frame-Options');
@@ -327,7 +379,7 @@ export default {
             return corsPreflight(request, env);
         }
 
-        const buildAuthCookie = () => `ddns_auth=${encodeURIComponent((env.AUTH_KEY || '').trim())}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=86400`;
+        const buildAuthCookie = async () => `ddns_auth=${encodeURIComponent(await createSessionToken(request, env))}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=86400`;
 
         if (url.protocol === 'http:') {
             return Response.redirect(url.href.replace(`http://${url.hostname}`, `https://${url.hostname}`), 301);
@@ -337,12 +389,16 @@ export default {
             return new Response(null, { status: 204 });
         }
 
+        if (url.pathname === '/robots.txt') {
+            return new Response('User-agent: *\nDisallow: /\n', { status: 200, headers: { 'Content-Type': 'text/plain;charset=UTF-8' } });
+        }
+
         if (url.pathname === '/') {
-            return redirect('/admin/');
+            return await handleHomePage(request, env);
         }
 
         if (url.pathname === '/logout') {
-            return redirect('/login', { 'Set-Cookie': 'ddns_auth=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax' });
+            return redirect('/login', { 'Set-Cookie': 'ddns_auth=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Strict' });
         }
 
         if (url.pathname === '/login') {
@@ -352,14 +408,14 @@ export default {
         const isAdminPath = url.pathname === '/admin' || url.pathname.startsWith('/admin/');
         const isApiPath = url.pathname.startsWith('/api/');
 
-        const auth = checkRequestAuth(request, url, env);
+        const auth = await checkRequestAuth(request, url, env);
 
         if (isAdminPath) {
             if (auth.enabled && !auth.ok) return redirect('/login');
             const adminResponse = await handleAdminAssets(request, env);
             if (auth.shouldSetCookie) {
                 const headers = new Headers(adminResponse.headers);
-                headers.set('Set-Cookie', buildAuthCookie());
+                headers.set('Set-Cookie', await buildAuthCookie());
                 return new Response(adminResponse.body, { status: adminResponse.status, statusText: adminResponse.statusText, headers });
             }
             return adminResponse;
@@ -389,7 +445,7 @@ export default {
                 headers.set('Cache-Control', 'no-store');
             }
             if (auth.shouldSetCookie) {
-                headers.set('Set-Cookie', buildAuthCookie());
+                headers.set('Set-Cookie', await buildAuthCookie());
             }
 
             return withCors(new Response(response.body, {
@@ -423,6 +479,9 @@ export default {
 };
 
 const API_ROUTES = {
+    '/api/version': (url, req, env, config) => handleVersion(env, config),
+    '/api/health': (url, req, env, config) => handleHealth(env, config),
+    '/api/auth/me': (url, req, env, config) => jsonResponse({ success: true, data: { authenticated: true } }),
     '/api/get-pool': (url, req, env, config) => handleGetPool(url, env),
     '/api/save-pool': (url, req, env, config) => handleSavePool(req, env, config),
     '/api/load-remote-url': (url, req, env, config) => handleLoadRemoteUrl(req),
@@ -458,7 +517,41 @@ async function handleAPIRequest(url, request, env, config) {
     return handler ? await handler(url, request, env, config) : new Response('Not Found', { status: 404 });
 }
 
+function handleVersion(env, config) {
+    return jsonResponse({
+        success: true,
+        data: {
+            name: 'DDNS Pro',
+            version: '7.1-light',
+            homeMode: (env.HOME_MODE || 'nginx'),
+            authEnabled: !!(env.AUTH_KEY || '').trim(),
+            hasKv: !!env.IP_DATA
+        }
+    });
+}
+
+async function handleHealth(env, config) {
+    let kv = false;
+    try {
+        if (env.IP_DATA) {
+            await env.IP_DATA.get('pool', { cacheTtl: 0 });
+            kv = true;
+        }
+    } catch (e) {}
+    return jsonResponse({
+        success: true,
+        data: {
+            ok: true,
+            kv,
+            auth: !!(env.AUTH_KEY || '').trim(),
+            targets: Array.isArray(config.targets) ? config.targets.length : 0,
+            timestamp: new Date().toISOString()
+        }
+    });
+}
+
 async function handleGetPool(url, env) {
+
     const poolKey = url.searchParams.get('poolKey') || 'pool';
     const onlyCount = url.searchParams.get('onlyCount') === 'true';
     
