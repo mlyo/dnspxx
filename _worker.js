@@ -2202,7 +2202,6 @@ async function fetchCFDetailed(config, path, method = 'GET', body = null) {
     }
 }
 
-async function getCandidateIPs
 async function getCandidateIPs(env, target, addLog, poolKey) {
     const pool = await requireKV(env).get(poolKey) || '';
     
