@@ -1,5 +1,5 @@
 /**
- * DDNS Pro & Proxy IP Manager v8.3 CF Error Detail Fix
+ * DDNS Pro & Proxy IP Manager v10 Dynamic Budget
  */
 
 // ==================== 默认配置（环境变量未设置时使用） ====================
@@ -44,6 +44,11 @@ const GLOBAL_SETTINGS = {
     CHECK_TIMEOUT: 5000,         // 单次 ProxyIP 检测超时(ms)
     MAX_CHECK_PER_DOMAIN: 100,   // 每个域名单轮最多检测多少个候选
     CHECK_BATCH_SIZE: 50,        // 每批交给外部接口检测的候选数
+    MAINTAIN_DOMAIN_LIMIT: 5,    // 兼容旧变量：单轮最多维护域名数
+    MAINTAIN_MAX_DOMAINS: 5,     // 动态预算下单轮最多维护域名数
+    MAINTAIN_SUBREQUEST_BUDGET: 45, // 单轮维护预估子请求预算，Free Worker 建议 45 以下
+    MAINTAIN_STOP_REMAINING: 8,  // 预算低于该值时不再开始下一个域名
+    MAINTAIN_CHECK_BUDGET: 35,   // 兼容旧变量：未批量时检测请求预算
     CHECK_CACHE_ENABLED: false,  // 默认不使用缓存，优先新鲜检测当前 DNS
     CHECK_CACHE_TTL_MINUTES: 360,// 开启缓存时的 success=true 结果缓存分钟数
     CHECK_FAIL_THRESHOLD: 3,     // 连续失败多少次后才移入垃圾桶
@@ -1404,6 +1409,11 @@ function createConfig(env, request = null) {
     config.checkCacheEnabled = String(env.CHECK_CACHE_ENABLED || '').toLowerCase() === 'true';
     config.checkCacheTtlMinutes = clampInt(env.CHECK_CACHE_TTL_MINUTES, 0, 1440, GLOBAL_SETTINGS.CHECK_CACHE_TTL_MINUTES);
     config.checkFailThreshold = clampInt(env.CHECK_FAIL_THRESHOLD, 1, 20, GLOBAL_SETTINGS.CHECK_FAIL_THRESHOLD);
+    config.maintainDomainLimit = clampInt(env.MAINTAIN_DOMAIN_LIMIT, 1, Math.max(1, config.targets.length || 1), GLOBAL_SETTINGS.MAINTAIN_DOMAIN_LIMIT);
+    config.maintainMaxDomains = clampInt(env.MAINTAIN_MAX_DOMAINS, 1, Math.max(1, config.targets.length || 1), config.maintainDomainLimit || GLOBAL_SETTINGS.MAINTAIN_MAX_DOMAINS);
+    config.maintainSubrequestBudget = clampInt(env.MAINTAIN_SUBREQUEST_BUDGET, 10, 100, GLOBAL_SETTINGS.MAINTAIN_SUBREQUEST_BUDGET);
+    config.maintainStopRemaining = clampInt(env.MAINTAIN_STOP_REMAINING, 1, 50, GLOBAL_SETTINGS.MAINTAIN_STOP_REMAINING);
+    config.maintainCheckBudget = clampInt(env.MAINTAIN_CHECK_BUDGET, 5, 200, GLOBAL_SETTINGS.MAINTAIN_CHECK_BUDGET);
     config.removeFailedImmediately = String(env.REMOVE_FAILED_IMMEDIATELY || '').toLowerCase() === 'true';
     config.remoteUpdateAlways = String(env.REMOTE_UPDATE_ALWAYS || '').toLowerCase() === 'true';
 
@@ -2059,10 +2069,65 @@ function pickBatchResultsPayload(data) {
     return [];
 }
 
+function buildCommaBatchCheckUrl(apiUrl, targets, token) {
+    const cleanTargets = uniqueStrings((targets || []).map(a => normalizeCheckAddr(String(a || '').trim())).filter(Boolean));
+    const joined = cleanTargets.join(',');
+    let url = String(apiUrl || '');
+    if (!url) return '';
+
+    // 兼容外部接口：/check?proxyip=ip1:443,ip2:443
+    if (/proxyip=$/i.test(url) || /[?&]proxyip=$/i.test(url)) {
+        url += encodeURIComponent(joined);
+    } else if (url.includes('proxyip=')) {
+        url = url.replace(/proxyip=[^&]*/i, 'proxyip=' + encodeURIComponent(joined));
+    } else {
+        url += (url.includes('?') ? '&' : '?') + 'proxyip=' + encodeURIComponent(joined);
+    }
+    if (token) url += `${url.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}`;
+    return url;
+}
+
+async function checkProxyIPCommaBatchOnce(addrs, apiUrl, token, source = 'main-batch') {
+    const targets = uniqueStrings((addrs || []).map(a => normalizeCheckAddr(String(a || '').trim())).filter(Boolean));
+    if (!targets.length) return [];
+    if (!apiUrl) return null;
+    const startedAt = Date.now();
+    try {
+        const requestUrl = buildCommaBatchCheckUrl(apiUrl, targets, token);
+        const response = await fetch(requestUrl, {
+            method: 'GET',
+            signal: AbortSignal.timeout(GLOBAL_SETTINGS.CHECK_TIMEOUT * 2),
+            headers: { 'Accept': 'application/json' }
+        });
+        if (!response.ok) throw new Error(`批量检测接口 HTTP ${response.status}`);
+        const payload = safeJSONParse(await response.text(), null);
+        const rows = pickBatchResultsPayload(payload);
+        if (!rows.length) throw new Error('批量检测接口没有返回数组结果');
+
+        const byCandidate = new Map();
+        for (const row of rows) {
+            const candidate = normalizeCheckAddr(String(row?.candidate || row?.proxyIP || row?.proxyip || row?.target || row?.address || '').trim());
+            if (candidate) byCandidate.set(candidate, row);
+        }
+
+        return targets.map(target => {
+            const row = byCandidate.get(target) || rows.find(r => normalizeCheckAddr(String(r?.candidate || '').trim()) === target) || null;
+            return row ? normalizeCheckResult(row, target, source, Date.now() - startedAt) : buildCheckFailure(target, '批量检测接口未返回该候选结果', source, Date.now() - startedAt);
+        });
+    } catch (error) {
+        return targets.map(target => buildCheckFailure(target, error?.message || '批量检测接口请求失败', source, Date.now() - startedAt));
+    }
+}
+
 async function checkProxyIPBatchOnce(addrs, apiUrl, token, source = 'main-batch') {
     const targets = uniqueStrings((addrs || []).map(a => normalizeCheckAddr(String(a || '').trim())).filter(Boolean));
     if (!targets.length) return [];
     if (!apiUrl) return null;
+
+    // 优先支持逗号 GET 批量接口：/check?proxyip=a,b,c
+    if (apiUrl.includes('check?') || apiUrl.includes('proxyip=')) {
+        return checkProxyIPCommaBatchOnce(targets, apiUrl, token, source);
+    }
 
     const startedAt = Date.now();
     try {
@@ -2098,25 +2163,21 @@ async function checkProxyIPBatch(addrs, config) {
     const targets = uniqueStrings((addrs || []).map(a => normalizeCheckAddr(String(a || '').trim())).filter(Boolean));
     if (!targets.length) return [];
 
-    if (config.checkBatchApi) {
-        const primary = await checkProxyIPBatchOnce(targets, config.checkBatchApi, config.checkApiToken, 'main-batch');
-        if (primary && primary.some(r => r?.success === true)) return primary;
-        if (config.checkBatchApiBackup) {
-            const backup = await checkProxyIPBatchOnce(targets, config.checkBatchApiBackup, config.checkApiBackupToken, 'backup-batch');
-            if (backup && backup.some(r => r?.success === true)) return backup;
-            return backup || primary || targets.map(t => buildCheckFailure(t, '主备批量检测接口均未通过', 'batch'));
-        }
-        return primary || targets.map(t => buildCheckFailure(t, '批量检测接口失败', 'main-batch'));
+    // 你的 CHECK_API / CHECK_API_BACKUP 本身支持逗号批量：/check?proxyip=a,b,c。
+    // 因此即使未配置 CHECK_BATCH_API，也默认走逗号 GET 批量，而不是逐个检测。
+    const primaryBatchApi = config.checkBatchApi || config.checkApi;
+    const backupBatchApi = config.checkBatchApiBackup || config.checkApiBackup;
+
+    const primary = await checkProxyIPBatchOnce(targets, primaryBatchApi, config.checkApiToken, config.checkBatchApi ? 'main-batch' : 'main-comma-batch');
+    if (primary && primary.some(r => r?.success === true)) return primary;
+
+    if (backupBatchApi) {
+        const backup = await checkProxyIPBatchOnce(targets, backupBatchApi, config.checkApiBackupToken, config.checkBatchApiBackup ? 'backup-batch' : 'backup-comma-batch');
+        if (backup && backup.some(r => r?.success === true)) return backup;
+        return backup || primary || targets.map(t => buildCheckFailure(t, '主备批量检测接口均未通过', 'batch'));
     }
 
-    const results = [];
-    const concurrency = Math.max(1, Math.min(5, Number(config.checkConcurrency || GLOBAL_SETTINGS.CONCURRENT_CHECKS)));
-    for (let i = 0; i < targets.length; i += concurrency) {
-        const chunk = targets.slice(i, i + concurrency);
-        const settled = await Promise.allSettled(chunk.map(target => checkProxyIP(target, config)));
-        results.push(...settled.map((r, index) => r.status === 'fulfilled' ? r.value : buildCheckFailure(chunk[index], '单项检测异常')));
-    }
-    return results;
+    return primary || targets.map(t => buildCheckFailure(t, '批量检测接口失败', 'main-batch'));
 }
 
 function makeAddrWithPort(value, port) {
@@ -2231,6 +2292,7 @@ async function getCandidateIPs(env, target, addLog, poolKey) {
 
 const CHECK_CACHE_KEY = 'check_cache_v1';
 const CHECK_FAIL_KEY = 'check_fail_count_v1';
+const MAINTAIN_CURSOR_KEY = 'maintain_cursor_v1';
 
 async function loadJsonFromKV(env, key, fallback) {
     try { return safeJSONParse(await requireKV(env).get(key) || '', fallback); }
@@ -2313,6 +2375,7 @@ async function maintainRecordsCommon(options) {
     const {
         env, target, addLog, report, poolKey,
         getCurrentIPs, deleteRecord, addRecord, shouldSkipCandidate,
+        applyDnsChanges,
         checkState, config
     } = options;
 
@@ -2320,21 +2383,44 @@ async function maintainRecordsCommon(options) {
     let poolList = parsePoolList(await requireKV(env).get(poolKey));
     report.poolKeyUsed = poolKey;
 
-    const maxChecks = Number(config.maxCheckPerDomain || GLOBAL_SETTINGS.MAX_CHECK_PER_DOMAIN);
+    const rawMaxChecks = Number(config.maxCheckPerDomain || GLOBAL_SETTINGS.MAX_CHECK_PER_DOMAIN);
     const batchSize = Number(config.checkBatchSize || GLOBAL_SETTINGS.CHECK_BATCH_SIZE);
+    const hasBatchCheck = true;// CHECK_API 支持逗号批量 proxyip，因此维护按批量检测处理
+    const checkBudget = Number(config.maintainCheckBudget || GLOBAL_SETTINGS.MAINTAIN_CHECK_BUDGET);
+    let maxChecks = rawMaxChecks;
+    if (!hasBatchCheck) {
+        maxChecks = Math.max(0, Math.min(rawMaxChecks, checkBudget - currentIPs.length));
+    }
     let validIPs = [];
     let checkedCount = 0;
     let poolModified = false;
+    const pendingDeletes = [];
+    const pendingPosts = [];
+
+    const plannedActiveCount = () => validIPs.length + pendingPosts.length;
 
     const currentTargets = currentIPs.map(item => makeAddrWithPort(item.addr, target.port));
     if (currentTargets.length) {
         addLog(`🔎 先检测当前 DNS 记录：${currentTargets.length} 个`);
-        const currentResults = await checkProxyIPBatch(currentTargets, config);
-        const currentMap = buildResultMap(currentTargets, currentResults);
+        if (!hasBatchCheck && currentTargets.length > checkBudget) {
+            addLog(`⚠️ 当前 DNS 记录数 ${currentTargets.length} 超过未配置批量检测接口时的安全预算 ${checkBudget}，本轮仅检测前 ${checkBudget} 个`);
+        }
+        const currentTargetsToCheck = hasBatchCheck ? currentTargets : currentTargets.slice(0, checkBudget);
+        report.currentCheckBatches = (report.currentCheckBatches || 0) + 1;
+        const currentResults = await checkProxyIPBatch(currentTargetsToCheck, config);
+        const currentMap = buildResultMap(currentTargetsToCheck, currentResults);
 
         for (const item of currentIPs) {
             const candidate = makeAddrWithPort(item.addr, target.port);
-            const checkResult = currentMap.get(candidate) || buildCheckFailure(candidate, '未返回检测结果');
+            let checkResult = currentMap.get(candidate);
+            if (!checkResult) {
+                if (!hasBatchCheck && checkedCount >= checkBudget) {
+                    validIPs.push(item.ip);
+                    addLog(`  ⏭️ ${candidate} - 本轮请求预算不足，暂时保留到下轮检测`);
+                    continue;
+                }
+                checkResult = buildCheckFailure(candidate, '未返回检测结果');
+            }
             checkedCount++;
             updateCheckStateAfterResult(checkState, candidate, checkResult, config);
 
@@ -2349,14 +2435,21 @@ async function maintainRecordsCommon(options) {
                 validIPs.push(item.ip);
                 addLog(`  ✅ ${candidate} - 当前 DNS 可用 ${checkResult.colo || ''} (${checkResult.responseTime || 0}ms)`);
             } else {
-                report.removed.push({ ip: item.addr, reason: checkResult.message || '外部检测 success=false' });
                 addLog(`  ❌ ${candidate} - 当前 DNS 检测失效，准备从 DNS 移除；IP 池暂不删除`);
-                const deleted = await deleteRecord(item);
-                if (deleted?.success) {
-                    addLog(`  ✅ ${item.ip || item.addr} - 已从 Cloudflare DNS 移除`);
+                if (applyDnsChanges) {
+                    if (item.id) pendingDeletes.push({ record: item, reason: checkResult.message || '外部检测 success=false' });
+                    else {
+                        addLog(`  ⚠️ 删除 A 记录跳过: 无记录ID，${item.ip || item.addr}`);
+                        report.deleteFailed = (report.deleteFailed || 0) + 1;
+                    }
                 } else {
-                    addLog(`  ⚠️ 删除 A 记录失败: ${item.id || '无记录ID'}，原因：${deleted?.error || '未知错误'}`);
-                    report.deleteFailed = (report.deleteFailed || 0) + 1;
+                    report.removed.push({ ip: item.addr, reason: checkResult.message || '外部检测 success=false' });
+                    const deleted = await deleteRecord(item);
+                    if (deleted?.success) addLog(`  ✅ ${item.ip || item.addr} - 已从 Cloudflare DNS 移除`);
+                    else {
+                        addLog(`  ⚠️ 删除 A 记录失败: ${item.id || '无记录ID'}，原因：${deleted?.error || '未知错误'}`);
+                        report.deleteFailed = (report.deleteFailed || 0) + 1;
+                    }
                 }
             }
         }
@@ -2367,6 +2460,20 @@ async function maintainRecordsCommon(options) {
     report.beforeActive = validIPs.length;
 
     if (validIPs.length >= target.minActive) {
+        if (pendingDeletes.length && applyDnsChanges) {
+            addLog(`🧹 当前可用数量已达标，批量移除失效 A 记录 ${pendingDeletes.length} 条`);
+            report.dnsBatchCount = (report.dnsBatchCount || 0) + 1;
+            const applied = await applyDnsChanges({ deletes: pendingDeletes, posts: [] });
+            if (applied?.success) {
+                for (const d of pendingDeletes) {
+                    report.removed.push({ ip: d.record.addr, reason: d.reason });
+                    addLog(`  ✅ ${d.record.ip || d.record.addr} - 已从 Cloudflare DNS 移除`);
+                }
+            } else {
+                report.deleteFailed = (report.deleteFailed || 0) + pendingDeletes.length;
+                addLog(`  ⚠️ 批量删除 A 记录失败，原因：${applied?.error || '未知错误'}`);
+            }
+        }
         report.afterActive = validIPs.length;
         report.poolAfterCount = poolList.length;
         report.checkedCount = checkedCount;
@@ -2375,8 +2482,8 @@ async function maintainRecordsCommon(options) {
         return;
     }
 
-    addLog(`需补充: ${target.minActive - validIPs.length} 个；批量大小 ${batchSize}，本域名单轮最多检测 ${maxChecks} 个候选`);
-    const candidates = await getCandidateIPs(env, target, addLog, poolKey);
+    addLog(`需补充: ${target.minActive - validIPs.length} 个；批量大小 ${batchSize}，本域名单轮最多检测 ${maxChecks} 个候选${hasBatchCheck ? '' : '（未配置批量检测接口，已按请求预算限制）'}`);
+    const candidates = maxChecks > 0 ? await getCandidateIPs(env, target, addLog, poolKey) : [];
 
     const candidateQueue = [];
     const seen = new Set(validIPs.map(ip => String(ip).replace(/^\[|\]$/g, '')));
@@ -2390,10 +2497,11 @@ async function maintainRecordsCommon(options) {
         seen.add(parsed.host);
     }
 
-    for (let i = 0; i < candidateQueue.length && validIPs.length < target.minActive; i += batchSize) {
+    for (let i = 0; i < candidateQueue.length && plannedActiveCount() < target.minActive; i += batchSize) {
         const batch = candidateQueue.slice(i, i + batchSize);
         if (!batch.length) break;
         addLog(`📡 批量检测候选第 ${Math.floor(i / batchSize) + 1} 批：${batch.length} 个`);
+        report.candidateCheckBatches = (report.candidateCheckBatches || 0) + 1;
         const results = await checkProxyIPBatch(batch, config);
         const resultMap = buildResultMap(batch, results);
         const successCount = results.filter(r => r?.success === true).length;
@@ -2401,19 +2509,24 @@ async function maintainRecordsCommon(options) {
 
         checkedCount += batch.length;
         for (const ipPort of batch) {
-            if (validIPs.length >= target.minActive) break;
+            if (plannedActiveCount() >= target.minActive) break;
             const checkResult = resultMap.get(ipPort) || buildCheckFailure(ipPort, '未返回检测结果');
             if (checkResult.success === true) {
                 updateCheckStateAfterResult(checkState, ipPort, checkResult, config);
                 const parsed = splitHostPort(ipPort);
-                const added = await addRecord(parsed.host);
-                if (added?.success) {
-                    validIPs.push(parsed.host);
-                    report.added.push({ ip: ipPort, colo: checkResult.colo || 'N/A', time: checkResult.responseTime || '-' });
-                    addLog(`  ✅ ${ipPort} - success=true，已加入 DNS ${checkResult.colo || ''} (${checkResult.responseTime || 0}ms)`);
+                if (applyDnsChanges) {
+                    pendingPosts.push({ ip: parsed.host, candidate: ipPort, checkResult });
+                    addLog(`  ✅ ${ipPort} - success=true，准备加入 DNS ${checkResult.colo || ''} (${checkResult.responseTime || 0}ms)`);
                 } else {
-                    addLog(`  ⚠️ 添加 A 记录失败: ${parsed.host}，原因：${added?.error || '未知错误'}`);
-                    report.addFailed = (report.addFailed || 0) + 1;
+                    const added = await addRecord(parsed.host);
+                    if (added?.success) {
+                        validIPs.push(parsed.host);
+                        report.added.push({ ip: ipPort, colo: checkResult.colo || 'N/A', time: checkResult.responseTime || '-' });
+                        addLog(`  ✅ ${ipPort} - success=true，已加入 DNS ${checkResult.colo || ''} (${checkResult.responseTime || 0}ms)`);
+                    } else {
+                        addLog(`  ⚠️ 添加 A 记录失败: ${parsed.host}，原因：${added?.error || '未知错误'}`);
+                        report.addFailed = (report.addFailed || 0) + 1;
+                    }
                 }
             } else {
                 const moved = await maybeMoveFailedToTrash({ env, poolKey, poolList, ipAddr: ipPort, reason: '补充检测失败', checkResult, state: checkState, config, addLog });
@@ -2423,6 +2536,27 @@ async function maintainRecordsCommon(options) {
                     poolModified = true;
                 }
             }
+        }
+    }
+
+    if (applyDnsChanges && (pendingDeletes.length || pendingPosts.length)) {
+        addLog(`🧾 提交 Cloudflare 批量 DNS 变更：删除 ${pendingDeletes.length} 条，新增 ${pendingPosts.length} 条`);
+        report.dnsBatchCount = (report.dnsBatchCount || 0) + 1;
+        const applied = await applyDnsChanges({ deletes: pendingDeletes, posts: pendingPosts });
+        if (applied?.success) {
+            for (const d of pendingDeletes) {
+                report.removed.push({ ip: d.record.addr, reason: d.reason });
+                addLog(`  ✅ ${d.record.ip || d.record.addr} - 已从 Cloudflare DNS 移除`);
+            }
+            for (const p of pendingPosts) {
+                validIPs.push(p.ip);
+                report.added.push({ ip: p.candidate, colo: p.checkResult.colo || 'N/A', time: p.checkResult.responseTime || '-' });
+                addLog(`  ✅ ${p.candidate} - 已批量加入 DNS ${p.checkResult.colo || ''} (${p.checkResult.responseTime || 0}ms)`);
+            }
+        } else {
+            report.deleteFailed = (report.deleteFailed || 0) + pendingDeletes.length;
+            report.addFailed = (report.addFailed || 0) + pendingPosts.length;
+            addLog(`  ⚠️ Cloudflare 批量 DNS 变更失败，原因：${applied?.error || '未知错误'}`);
         }
     }
 
@@ -2440,6 +2574,29 @@ async function maintainRecordsCommon(options) {
     report.poolAfterCount = poolList.length;
     report.afterActive = validIPs.length;
     addLog(`📊 摘要：当前 DNS 优先，外部检测 ${checkedCount}，最终可用 ${validIPs.length}/${target.minActive}`);
+}
+async function batchApplyDnsAChanges(config, target, changes) {
+    const deletes = (changes?.deletes || [])
+        .map(item => item?.record || item)
+        .filter(record => record && record.id)
+        .map(record => ({ id: record.id }));
+
+    const posts = (changes?.posts || [])
+        .map(item => ({
+            type: 'A',
+            name: target.domain,
+            content: item.ip,
+            ttl: 60,
+            proxied: false
+        }))
+        .filter(record => record.content);
+
+    if (!deletes.length && !posts.length) return { success: true, skipped: true };
+
+    const payload = { deletes, patches: [], puts: [], posts };
+    const r = await fetchCFDetailed(config, `/zones/${config.zoneId}/dns_records/batch`, 'POST', payload);
+    if (r.ok) return { success: true, detail: r, deleted: deletes.length, posted: posts.length };
+    return { success: false, error: formatCFError(r), detail: r, deleted: deletes.length, posted: posts.length };
 }
 
 async function maintainARecords(env, target, addLog, report, poolKey, checkFn, config, checkState) {
@@ -2485,9 +2642,10 @@ async function maintainARecords(env, target, addLog, report, poolKey, checkFn, c
             return { success: true, detail: r };
         },
         shouldSkipCandidate: (ipPort, activeList) => {
-            const [ip, port] = ipPort.split(':');
-            return port !== target.port || activeList.includes(ip);
+            const parsed = splitHostPort(ipPort);
+            return String(parsed.port) !== String(target.port) || activeList.includes(parsed.host);
         },
+        applyDnsChanges: async (changes) => batchApplyDnsAChanges(config, target, changes),
         checkState,
         config
     });
@@ -2819,6 +2977,18 @@ async function scheduledMaintainWithConditionalRemoteUpdate(env, config) {
     return await maintainAllDomains(env, false, config);
 }
 
+
+function estimateMaintainReportSubrequests(report) {
+    // 这是保守估算，用于动态预算决策，不直接影响真实 fetch。
+    // 包含：Cloudflare 查询 DNS、当前 DNS 批量检测、候选批量检测、DNS batch 更新、必要 KV 读写余量。
+    const cfQuery = 1;
+    const currentCheck = Number(report?.currentCheckBatches || 0);
+    const candidateCheck = Number(report?.candidateCheckBatches || 0);
+    const dnsBatch = Number(report?.dnsBatchCount || 0);
+    const kvAndMargin = 2;
+    return cfQuery + currentCheck + candidateCheck + dnsBatch + kvAndMargin;
+}
+
 async function maintainAllDomains(env, isManual = false, config) {
     const allReports = [];
     const startTime = Date.now();
@@ -2866,8 +3036,26 @@ async function maintainAllDomains(env, isManual = false, config) {
         .filter(e => e !== null);
     poolEntries.forEach(([name, count]) => poolStats.set(name, { before: count, after: count }));
 
-    for (let i = 0; i < config.targets.length; i++) {
-        const target = config.targets[i];
+    const allTargets = Array.isArray(config.targets) ? config.targets : [];
+    const budgetTotal = Math.max(10, Number(config.maintainSubrequestBudget || GLOBAL_SETTINGS.MAINTAIN_SUBREQUEST_BUDGET));
+    const stopRemaining = Math.max(1, Number(config.maintainStopRemaining || GLOBAL_SETTINGS.MAINTAIN_STOP_REMAINING));
+    const maxDomainsThisRun = Math.max(1, Math.min(Number(config.maintainMaxDomains || config.maintainDomainLimit || allTargets.length || 1), allTargets.length || 1));
+    let budgetUsed = 0;
+    let cursorIndex = Number(await requireKV(env).get(MAINTAIN_CURSOR_KEY) || 0) || 0;
+    if (cursorIndex < 0 || cursorIndex >= allTargets.length) cursorIndex = 0;
+    const targetsToRun = [];
+    if (allTargets.length) {
+        console.log(`ℹ️ 动态预算维护：预算 ${budgetTotal}，停止阈值 ${stopRemaining}，最多域名 ${maxDomainsThisRun}/${allTargets.length}，起点索引 ${cursorIndex}`);
+    }
+
+    for (let i = 0; i < Math.min(maxDomainsThisRun, allTargets.length); i++) {
+        const originalIndex = (cursorIndex + i) % allTargets.length;
+        const target = allTargets[originalIndex];
+        if (i > 0 && (budgetTotal - budgetUsed) <= stopRemaining) {
+            console.log(`⚠️ 剩余预算 ${budgetTotal - budgetUsed}/${budgetTotal} 低于阈值 ${stopRemaining}，本轮停止，下一轮从索引 ${originalIndex} 继续`);
+            break;
+        }
+        targetsToRun.push({ target, originalIndex });
         const { domain, mode, port, minActive } = target;
 
         const report = {
@@ -2956,6 +3144,12 @@ async function maintainAllDomains(env, isManual = false, config) {
             report.status = 'failed';
         }
         allReports.push(report);
+
+        const estimatedCost = estimateMaintainReportSubrequests(report);
+        budgetUsed += estimatedCost;
+        report.estimatedSubrequests = estimatedCost;
+        report.remainingBudget = Math.max(0, budgetTotal - budgetUsed);
+        console.log(`📉 ${target.domain} 预估子请求消耗 ${estimatedCost}，本轮剩余预算 ${report.remainingBudget}/${budgetTotal}`);
     }
 
     // 更新池统计（无需再次遍历 KV 读取：直接使用维护过程中已知的最终池长度）
@@ -3001,10 +3195,22 @@ async function maintainAllDomains(env, isManual = false, config) {
         tgResult = await sendTG(allReports, poolStats, isManual, config);
     }
 
-    console.log(`✅ 维护任务完成，总耗时: ${Date.now() - startTime}ms，处理域名: ${config.targets.length}个`);
+    let nextCursor = 0;
+    if (allTargets.length) {
+        nextCursor = (cursorIndex + targetsToRun.length) % allTargets.length;
+        // 动态预算维护无论是否跑满全部域名，都记录下次起点；这样异常域名不会长期阻塞其它域名。
+        await requireKV(env).put(MAINTAIN_CURSOR_KEY, String(nextCursor));
+    }
+
+    console.log(`✅ 维护任务完成，总耗时: ${Date.now() - startTime}ms，本轮处理域名: ${targetsToRun.length}/${allTargets.length}，预估子请求: ${budgetUsed}/${budgetTotal}`);
     
     return {
         success: true,
+        processedTargets: targetsToRun.length,
+        totalTargets: allTargets.length,
+        estimatedSubrequests: budgetUsed,
+        subrequestBudget: budgetTotal,
+        nextCursor,
         reports: allReports,
         poolStats: Object.fromEntries(poolStats),
         notified: tgResult.sent,
