@@ -1,5 +1,5 @@
 /**
- * DDNS Pro & Proxy IP Manager v7.0
+ * DDNS Pro & Proxy IP Manager v8.0 Final Light
  */
 
 // ==================== 默认配置（环境变量未设置时使用） ====================
@@ -16,9 +16,9 @@ const DEFAULT_CONFIG = {
     tgId: '',                // TG_ID: Telegram Chat ID
     
     // 检测 API 配置
-    checkApi: 'https://check.proxyip.cmliussss.net/check?proxyip=',  // CHECK_API: ProxyIP 检测接口
+    checkApi: 'https://cf.090227.xyz/check?proxyip=',  // CHECK_API: 主 ProxyIP 检测接口
     checkApiToken: '',       // CHECK_API_TOKEN: 检测接口认证Token
-    checkApiBackup: 'https://check.proxyip.cmliussss.net/check?proxyip=',      // CHECK_API_BACKUP: 备用检测接口
+    checkApiBackup: 'https://api.090227.xyz/check?proxyip=',      // CHECK_API_BACKUP: 备用 ProxyIP 检测接口
     checkApiBackupToken: '', // CHECK_API_BACKUP_TOKEN: 备用检测接口认证Token
     
     // DNS 配置
@@ -513,12 +513,18 @@ const API_ROUTES = {
     '/api/version': (url, req, env, config) => handleVersion(env, config),
     '/api/health': (url, req, env, config) => handleHealth(env, config),
     '/api/auth/me': (url, req, env, config) => jsonResponse({ success: true, data: { authenticated: true } }),
+    '/api/pools': (url, req, env, config) => handleListPools(env),
+    '/api/pool': (url, req, env, config) => req.method === 'GET' ? handleGetPool(url, env) : handleSavePool(req, env, config),
     '/api/get-pool': (url, req, env, config) => handleGetPool(url, env),
     '/api/save-pool': (url, req, env, config) => handleSavePool(req, env, config),
     '/api/load-remote-url': (url, req, env, config) => handleLoadRemoteUrl(req),
     '/api/current-status': (url, req, env, config) => handleCurrentStatus(url, config),
     '/api/lookup-domain': (url, req, env, config) => handleLookupDomain(url, config),
     '/api/check-ip': (url, req, env, config) => handleCheckIP(url, config),
+    '/api/check': (url, req, env, config) => handleCheckBatch(req, env, config),
+    '/api/resolve': (url, req, env, config) => handleResolve(url, config),
+    '/api/resolve-batch': (url, req, env, config) => handleResolveBatch(req, config),
+    '/api/domain/status': (url, req, env, config) => handleDomainDnsStatus(url, env, config),
     '/api/ip-info': (url, req, env, config) => handleIPInfo(url, config),
     '/api/delete-record': (url, req, env, config) => handleDeleteRecord(url, config),
     '/api/add-a-record': (url, req, env, config) => handleAddARecord(req, config),
@@ -537,7 +543,7 @@ const POST_ONLY_ROUTES = new Set([
     '/api/restore-from-trash',
     '/api/delete-record',
     '/api/delete-pool', 
-    '/api/maintain'
+    '/api/maintain', '/api/check', '/api/resolve-batch'
 ]);
 
 async function handleAPIRequest(url, request, env, config) {
@@ -553,7 +559,7 @@ function handleVersion(env, config) {
         success: true,
         data: {
             name: 'DDNS Pro',
-            version: '7.1-light',
+            version: '8.0-final-light',
             homeMode: (env.HOME_MODE || 'nginx'),
             authEnabled: !!(env.AUTH_KEY || '').trim(),
             hasKv: hasKV(env)
@@ -589,9 +595,217 @@ async function handleHealth(env, config) {
     });
 }
 
+
+function normalizePoolKey(input, fallback = 'pool') {
+    let name = String(input || '').trim();
+    if (!name) return fallback;
+    if (name === 'pool' || name === 'pool_trash') return name;
+    name = name.replace(/[^\u4e00-\u9fa5a-zA-Z0-9_-]/g, '_');
+    return name.startsWith('pool_') ? name : `pool_${name}`;
+}
+
+async function handleListPools(env) {
+    const store = requireKV(env);
+    const listed = await store.list({ prefix: 'pool' });
+    const set = new Set(['pool', 'pool_trash']);
+    for (const item of listed.keys || []) {
+        if (item.name === 'pool' || item.name === 'pool_trash' || item.name.startsWith('pool_')) set.add(item.name);
+    }
+    const pools = Array.from(set).sort((a, b) => {
+        const order = { pool: 0, pool_trash: 2 };
+        return (order[a] ?? 1) - (order[b] ?? 1) || a.localeCompare(b, 'zh-CN');
+    });
+    return jsonResponse({ success: true, data: { pools, defaultPool: 'pool' } });
+}
+
+async function handleResolve(url, config) {
+    const target = url.searchParams.get('target') || url.searchParams.get('proxyip') || url.searchParams.get('domain');
+    if (!target) return badRequest({ success: false, error: { code: 'MISSING_TARGET', message: '缺少 target 参数' } });
+    const targets = await resolveTarget(target, config);
+    return jsonResponse({ success: true, data: { input: target, targets } });
+}
+
+async function handleResolveBatch(request, config) {
+    const body = await readJsonBody(request);
+    if (!body) return badRequest({ success: false, error: { code: 'INVALID_JSON', message: '请求体不是有效 JSON' } });
+    const inputs = normalizeTargetInput(body.targets || body.proxyips || body.text || '');
+    if (!inputs.length) return badRequest({ success: false, error: { code: 'MISSING_TARGETS', message: '缺少 targets' } });
+    if (inputs.length > 50) return badRequest({ success: false, error: { code: 'TOO_MANY_TARGETS', message: '一次最多解析 50 条' } });
+    const results = await Promise.all(inputs.map(async input => {
+        try { return { input, targets: await resolveTarget(input, config) }; }
+        catch (e) { return { input, targets: [], error: e.message || '解析失败' }; }
+    }));
+    return jsonResponse({ success: true, data: { results } });
+}
+
+async function handleCheckBatch(request, env, config) {
+    const body = await readJsonBody(request);
+    if (!body) return badRequest({ success: false, error: { code: 'INVALID_JSON', message: '请求体不是有效 JSON' } });
+    const inputs = normalizeTargetInput(body.targets || body.text || body.ip || '');
+    if (!inputs.length) return badRequest({ success: false, error: { code: 'MISSING_TARGETS', message: '缺少检测目标' } });
+    if (inputs.length > 50) return badRequest({ success: false, error: { code: 'TOO_MANY_TARGETS', message: '一次最多检测 50 条' } });
+
+    const shouldResolve = body.resolve !== false;
+    const useBackupOnly = body.useBackup === true;
+    const candidates = [];
+    const resolved = [];
+    for (const input of inputs) {
+        try {
+            const targets = shouldResolve ? await resolveTarget(input, config) : [normalizeCheckAddr(input)];
+            resolved.push({ input, targets });
+            for (const target of targets) if (!candidates.includes(target)) candidates.push(target);
+        } catch (e) {
+            resolved.push({ input, targets: [], error: e.message || '解析失败' });
+        }
+    }
+
+    const results = [];
+    for (const candidate of candidates.slice(0, 80)) {
+        const result = useBackupOnly && config.checkApiBackup
+            ? await checkProxyIPOnce(normalizeCheckAddr(candidate), config.checkApiBackup, config.checkApiBackupToken, 'backup')
+            : await checkProxyIP(candidate, config);
+        results.push(toLightCheckResult(result, candidate));
+    }
+    return jsonResponse({ success: true, data: { resolved, results, successCount: results.filter(r => r.success).length } });
+}
+
+async function handleDomainDnsStatus(url, env, config) {
+    const domain = (url.searchParams.get('domain') || '').trim();
+    if (!domain) return badRequest({ success: false, error: { code: 'MISSING_DOMAIN', message: '缺少 domain 参数' } });
+    const clean = domain.replace(/^https?:\/\//, '').split('/')[0].split(':')[0];
+    const [a, aaaa, txt] = await Promise.all([dohQuery(clean, 'A', config), dohQuery(clean, 'AAAA', config), dohQuery(clean, 'TXT', config)]);
+    let mapping = {};
+    try { mapping = safeJSONParse(await requireKV(env).get('domain_pool_mapping') || '{}', {}); } catch {}
+    return jsonResponse({ success: true, data: {
+        domain: clean,
+        A: a.filter(x => x.type === 1).map(x => x.data),
+        AAAA: aaaa.filter(x => x.type === 28).map(x => x.data),
+        TXT: txt.filter(x => x.type === 16).map(x => normalizeTxtValue(x.data)),
+        pool: mapping[clean] || mapping[domain] || ''
+    } });
+}
+
+function normalizeTargetInput(value) {
+    const arr = Array.isArray(value) ? value : String(value || '').split(/\r?\n|,/);
+    const seen = new Set();
+    const out = [];
+    for (const item of arr) {
+        const v = String(item || '').split('#')[0].trim();
+        if (!v || seen.has(v)) continue;
+        seen.add(v); out.push(v);
+    }
+    return out;
+}
+
+function normalizeTxtValue(value) {
+    const text = String(value ?? '').trim();
+    if (text.startsWith('"') && text.endsWith('"')) return text.slice(1, -1).replace(/\\"/g, '"');
+    return text.replace(/\\"/g, '"');
+}
+
+function parseResolveTarget(input) {
+    let host = String(input || '').split('#')[0].trim();
+    let port = 443;
+    if (!host) return { host: '', port };
+    if (host.startsWith('[')) {
+        const idx = host.lastIndexOf(']:');
+        if (idx !== -1) {
+            const p = Number(host.slice(idx + 2));
+            if (Number.isInteger(p) && p >= 1 && p <= 65535) { port = p; host = host.slice(0, idx + 1); }
+        }
+        return { host, port };
+    }
+    const colonCount = (host.match(/:/g) || []).length;
+    if (colonCount === 1) {
+        const idx = host.lastIndexOf(':');
+        const p = Number(host.slice(idx + 1));
+        if (Number.isInteger(p) && p >= 1 && p <= 65535) { port = p; host = host.slice(0, idx); }
+    }
+    const tp = host.toLowerCase().match(/\.tp(\d{1,5})\./);
+    if (tp) {
+        const p = Number(tp[1]);
+        if (p >= 1 && p <= 65535) port = p;
+    }
+    return { host, port };
+}
+
+function isIPv4Literal(value) {
+    const parts = String(value || '').split('.');
+    return parts.length === 4 && parts.every(p => /^\d{1,3}$/.test(p) && Number(p) >= 0 && Number(p) <= 255);
+}
+
+function isIPv6Literal(value) {
+    const v = String(value || '').replace(/^\[|\]$/g, '');
+    return v.includes(':') && /^[0-9a-fA-F:]+$/.test(v);
+}
+
+async function dohQuery(name, type, config) {
+    try {
+        const endpoint = config?.dohApi || DEFAULT_CONFIG.dohApi;
+        const r = await fetch(`${endpoint}?name=${encodeURIComponent(name)}&type=${encodeURIComponent(type)}`, {
+            headers: { accept: 'application/dns-json' },
+            signal: AbortSignal.timeout(GLOBAL_SETTINGS.DOH_TIMEOUT)
+        });
+        if (!r.ok) return [];
+        const data = await r.json();
+        return Array.isArray(data.Answer) ? data.Answer : [];
+    } catch { return []; }
+}
+
+async function resolveTarget(input, config) {
+    let { host, port } = parseResolveTarget(input);
+    if (!host) return [];
+    const bracketedIPv6 = host.startsWith('[') && host.endsWith(']');
+    if (isIPv4Literal(host)) return [`${host}:${port}`];
+    if (bracketedIPv6 || isIPv6Literal(host)) {
+        const clean = host.replace(/^\[|\]$/g, '');
+        return [`[${clean}]:${port}`];
+    }
+    if (host.toLowerCase().includes('.william.') || host.toLowerCase().startsWith('txt@')) {
+        const txtHost = host.toLowerCase().startsWith('txt@') ? host.slice(4) : host;
+        const txtAnswers = await dohQuery(txtHost, 'TXT', config);
+        const targets = [];
+        for (const record of txtAnswers) {
+            const value = normalizeTxtValue(record.data);
+            for (const part of value.split(',')) {
+                const candidate = part.trim();
+                if (candidate) targets.push(normalizeCheckAddr(candidate));
+            }
+        }
+        if (targets.length) return Array.from(new Set(targets));
+    }
+    const [a, aaaa] = await Promise.all([dohQuery(host, 'A', config), dohQuery(host, 'AAAA', config)]);
+    const out = [];
+    for (const record of a) if (record.type === 1 && record.data) out.push(`${record.data}:${port}`);
+    for (const record of aaaa) if (record.type === 28 && record.data) out.push(`[${record.data}]:${port}`);
+    if (!out.length) throw new Error('域名没有解析到 A/AAAA 记录');
+    return Array.from(new Set(out));
+}
+
+function toLightCheckResult(result, fallbackCandidate = '') {
+    const r = result || buildCheckFailure(fallbackCandidate);
+    return {
+        candidate: r.candidate || fallbackCandidate,
+        success: r.success === true,
+        source: r.source || 'main',
+        ip: r.ip || r.proxyIP || '',
+        ipType: r.ipType || (String(r.proxyIP || r.ip || '').includes(':') ? 'ipv6' : 'ipv4'),
+        proxyIP: r.proxyIP || r.ip || '',
+        portRemote: r.portRemote || 443,
+        colo: r.colo || '',
+        asn: r.asn ?? null,
+        asOrganization: r.asOrganization || r.org || '',
+        country: r.country || '',
+        region: r.region || r.regionCode || '',
+        city: r.city || '',
+        responseTime: r.responseTime || 0,
+        message: r.message || ''
+    };
+}
+
 async function handleGetPool(url, env) {
 
-    const poolKey = url.searchParams.get('poolKey') || 'pool';
+    const poolKey = normalizePoolKey(url.searchParams.get('poolKey') || url.searchParams.get('name') || 'pool');
     const onlyCount = url.searchParams.get('onlyCount') === 'true';
     
     const pool = await requireKV(env).get(poolKey) || '';
@@ -608,7 +822,7 @@ async function handleSavePool(request, env, config) {
     if (!body) {
         return badRequest({ success: false, error: '请求体不是有效JSON' });
     }
-    const poolKey = body.poolKey || 'pool';
+    const poolKey = normalizePoolKey(body.poolKey || body.name || 'pool');
     const mode = body.mode || 'append'; // append: 追加, replace: 覆盖, remove: 删除
     const newIPs = await cleanIPListAsync(body.pool || '', false, config);
 
@@ -752,12 +966,15 @@ async function handleLookupDomain(url, config) {
 async function handleCheckIP(url, config) {
     const target = url.searchParams.get('ip');
     if (!target) return badRequest({ error: '缺少ip参数' });
-    const useBackup = url.searchParams.get('useBackup') === 'true';
-    if (useBackup && config.checkApiBackup) {
+
+    // useBackup=true 表示手动只测备用接口；默认行为是主接口失败后自动切备用。
+    const useBackupOnly = url.searchParams.get('useBackup') === 'true';
+    if (useBackupOnly && config.checkApiBackup) {
         const addr = normalizeCheckAddr(target);
-        const result = await checkProxyIPOnce(addr, config.checkApiBackup, config.checkApiBackupToken);
-        return jsonResponse(result ?? { success: false });
+        const result = await checkProxyIPOnce(addr, config.checkApiBackup, config.checkApiBackupToken, 'backup');
+        return jsonResponse(result ?? buildCheckFailure(addr, '备用检测接口无响应', 'backup'));
     }
+
     const res = await checkProxyIP(target, config);
     return jsonResponse(res);
 }
@@ -960,10 +1177,10 @@ async function handleCreatePool(request, env) {
     if (!body) {
         return badRequest({ success: false, error: '请求体不是有效JSON' });
     }
-    const poolKey = body.poolKey;
+    const poolKey = normalizePoolKey(body.poolKey || body.name);
     
-    if (!poolKey || !poolKey.startsWith('pool_')) {
-        return badRequest({ success: false, error: '池名称必须以pool_开头' });
+    if (!poolKey || poolKey === 'pool' || poolKey === 'pool_trash') {
+        return badRequest({ success: false, error: '请输入自定义池名' });
     }
     
     // 支持中文、字母、数字、下划线、横杠
@@ -981,7 +1198,7 @@ async function handleCreatePool(request, env) {
 }
 
 async function handleDeletePool(url, env) {
-    const poolKey = url.searchParams.get('poolKey');
+    const poolKey = normalizePoolKey(url.searchParams.get('poolKey') || url.searchParams.get('name') || '');
     
     if (!poolKey) {
         return badRequest({ success: false, error: '缺少poolKey参数' });
@@ -1679,22 +1896,75 @@ async function getDomainStatus(target, config) {
     return result;
 }
 
-// 单次检测IP（不带重试）
-async function checkProxyIPOnce(addr, apiUrl, token) {
+// 单次检测 IP。检测接口返回字段统一为：
+// candidate, success, proxyIP, portRemote, responseTime, colo, message, probe_results。
+async function checkProxyIPOnce(addr, apiUrl, token, source = 'main') {
     try {
-        let url = `${apiUrl}${encodeURIComponent(addr)}`;
+        let requestUrl = `${apiUrl}${encodeURIComponent(addr)}`;
         if (token) {
-            url += `${url.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}`;
+            requestUrl += `${requestUrl.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}`;
         }
 
-        const r = await fetch(url, { signal: AbortSignal.timeout(GLOBAL_SETTINGS.CHECK_TIMEOUT) });
-        if (!r.ok) return null;
+        const startedAt = Date.now();
+        const r = await fetch(requestUrl, { signal: AbortSignal.timeout(GLOBAL_SETTINGS.CHECK_TIMEOUT) });
+        if (!r.ok) return buildCheckFailure(addr, `检测接口 HTTP ${r.status}`, source, Date.now() - startedAt);
 
         const data = safeJSONParse(await r.text(), null);
-        return data && typeof data === 'object' ? data : null;
-    } catch {
-        return null;
+        if (!data || typeof data !== 'object') return buildCheckFailure(addr, '检测接口返回不是有效 JSON', source, Date.now() - startedAt);
+
+        return normalizeCheckResult(data, addr, source, Date.now() - startedAt);
+    } catch (e) {
+        return buildCheckFailure(addr, e?.name === 'TimeoutError' ? '检测接口超时' : (e?.message || '检测接口请求失败'), source);
     }
+}
+
+function buildCheckFailure(addr, message = '检测失败', source = 'main', responseTime = 0) {
+    const parsed = splitHostPort(addr);
+    return {
+        candidate: addr,
+        success: false,
+        proxyIP: parsed.host,
+        portRemote: parsed.port,
+        responseTime,
+        colo: '',
+        message,
+        probe_results: {},
+        source
+    };
+}
+
+function normalizeCheckResult(data, addr, source = 'main', fallbackTime = 0) {
+    const parsed = splitHostPort(addr);
+    const responseTime = Number(data.responseTime ?? data.time ?? data.elapsed ?? fallbackTime ?? 0);
+    const success = data.success === true || data.available === true || data.ok === true || Boolean(data.ip);
+
+    return {
+        ...data,
+        candidate: String(data.candidate || addr),
+        success,
+        proxyIP: String(data.proxyIP || parsed.host || data.ip || ''),
+        portRemote: Number(data.portRemote ?? data.port ?? parsed.port ?? 443),
+        responseTime: Number.isFinite(responseTime) ? responseTime : 0,
+        colo: String(data.colo || data.coloCode || data.cfColo || ''),
+        message: data.message || data.error || (success ? '' : '检测未通过'),
+        probe_results: data.probe_results && typeof data.probe_results === 'object' ? data.probe_results : {},
+        source
+    };
+}
+
+function splitHostPort(addr) {
+    const value = String(addr || '').trim();
+    if (!value) return { host: '', port: 443 };
+
+    const ipv6 = value.match(/^\[([^\]]+)\]:(\d+)$/);
+    if (ipv6) return { host: ipv6[1], port: Number(ipv6[2]) || 443 };
+
+    const ipv4OrDomain = value.match(/^(.+):(\d+)$/);
+    if (ipv4OrDomain && !ipv4OrDomain[1].includes(':')) {
+        return { host: ipv4OrDomain[1], port: Number(ipv4OrDomain[2]) || 443 };
+    }
+
+    return { host: value.replace(/^\[|\]$/g, ''), port: 443 };
 }
 
 // 地址格式化：智能添加默认端口443，处理IPv6方括号
@@ -1717,17 +1987,24 @@ function normalizeCheckAddr(input) {
 async function checkProxyIP(input, config) {
     const addr = normalizeCheckAddr(input);
 
-    // 主接口检测
-    const result = await checkProxyIPOnce(addr, config.checkApi, config.checkApiToken);
-    if (result !== null) return result;
+    // 主接口优先：主接口不可用或判定失败时，自动切备用接口。
+    const primary = await checkProxyIPOnce(addr, config.checkApi, config.checkApiToken, 'main');
+    if (primary?.success) return primary;
 
-    // 备用接口检测
     if (config.checkApiBackup) {
-        const backup = await checkProxyIPOnce(addr, config.checkApiBackup, config.checkApiBackupToken);
-        if (backup !== null) return backup;
+        const backup = await checkProxyIPOnce(addr, config.checkApiBackup, config.checkApiBackupToken, 'backup');
+        if (backup?.success) return backup;
+
+        return {
+            ...(backup || primary || buildCheckFailure(addr)),
+            success: false,
+            message: backup?.message || primary?.message || '主备检测接口均未通过',
+            primary_result: primary || null,
+            backup_result: backup || null
+        };
     }
 
-    return { success: false };
+    return primary || buildCheckFailure(addr);
 }
 
 async function fetchCF(config, path, method = 'GET', body = null) {
