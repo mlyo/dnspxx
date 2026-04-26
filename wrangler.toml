@@ -1,21 +1,3 @@
 name = "dnsproxyip-backend"
 main = "_worker.js"
-compatibility_date = "2025-04-01"
-
-# 绑定你的 KV 命名空间
-# 执行：wrangler kv namespace create IP_DATA
-
-[vars]
-CHECK_API = "https://check.proxyip.cmliussss.net/check?proxyip="
-CHECK_API_BACKUP = "https://check.proxyip.cmliussss.net/check?proxyip="
-DOH_API = "https://cloudflare-dns.com/dns-query"
-IP_INFO_ENABLED = "false"
-IP_INFO_API = "http://ip-api.com/json"
-# 示例：CF_DOMAIN = "example.com:443&3,txt@proxy.example.com:443&3"
-CF_DOMAIN = ""
-
-# ADMIN_ORIGIN 已内置默认：https://mlyo.github.io
-# ALLOWED_ORIGINS 已内置默认：跟随 ADMIN_ORIGIN
-# 如果你要换前端源站，可取消下面两行注释并修改：
-# ADMIN_ORIGIN = "https://你的用户名.github.io"
-# ALLOWED_ORIGINS = "https://你的用户名.github.io"
+compatibility_date = "2026-04-01"
