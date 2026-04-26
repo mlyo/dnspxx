@@ -779,6 +779,11 @@ async function handleAddARecord(request, config) {
 
 async function handleMaintain(url, env, config) {
     const isManual = url.searchParams.get('manual') === 'true';
+
+    // 手动维护也必须先建立国家域名映射，否则会回退到默认 pool。
+    // 例如 us.cail.qzz.io -> pool_US，kr.cail.qzz.io -> pool_KR。
+    await ensureCountryDomainPoolMapping(env, config);
+
     const res = await maintainAllDomains(env, isManual, config);
 
     // 将日志包含在响应中
@@ -2036,8 +2041,9 @@ async function maintainAllDomains(env, isManual = false, config) {
         };
         
         addLog(`🚀 开始维护: ${target.domain}`);
-        // 内联 getPoolKeyForDomain
-        const poolKey = domainPoolMapping?.[target.domain] ?? 'pool';
+        // 域名到 IP 池映射：优先使用规范化域名，避免大小写/前缀导致命中失败。
+        const normalizedDomain = normalizeTargetDomainName(target.domain);
+        const poolKey = domainPoolMapping?.[normalizedDomain] ?? domainPoolMapping?.[target.domain] ?? 'pool';
 
         if (target.mode === 'A') {
             await maintainARecords(env, target, addLog, report, poolKey, checkProxyIPCached, config);
