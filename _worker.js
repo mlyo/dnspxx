@@ -561,11 +561,19 @@ async function handleLoadRemoteUrl(request) {
     if (!url) {
         return badRequest({ success: false, error: '缺少URL' });
     }
-    const ips = await loadFromRemoteUrl(url);
+
+    const options = {
+        cfCountry: body.cfCountry || body.country || '',
+        defaultPort: body.defaultPort || '443'
+    };
+
+    const ips = await loadFromRemoteUrl(url, options);
     return jsonResponse({ 
         success: true, 
         ips,
-        count: ips ? ips.split('\n').length : 0
+        count: ips ? ips.split('\n').filter(Boolean).length : 0,
+        source: url,
+        filter: options.cfCountry ? { cfCountry: options.cfCountry } : null
     });
 }
 
@@ -1131,7 +1139,136 @@ async function cleanIPListAsync(text, resolveDomains = true, config = null) {
     return Array.from(map.values()).join('\n');
 }
 
-async function loadFromRemoteUrl(url) {
+function normalizeRemoteCSVText(text) {
+    // 兼容少数 CSV 被复制/压缩成“表头 + 空格 + 数据行”的情况。
+    return String(text || '')
+        .replace(/^\uFEFF/, '')
+        .replace(/\r\n/g, '\n')
+        .replace(/\r/g, '\n')
+        .replace(/(IP\s*,\s*cf-meta-ip\s*,\s*端口\s*,[^\n]*?TLS延迟\(ms\))\s+(?=\d{1,3}(?:\.\d{1,3}){3}\s*,)/i, '$1\n')
+        .replace(/(\d+(?:\.\d+)?)\s+(?=\d{1,3}(?:\.\d{1,3}){3}\s*,)/g, '$1\n');
+}
+
+function cleanCSVCell(value) {
+    let v = String(value ?? '')
+        .replace(/^\uFEFF/, '')
+        .replace(/[\u200B-\u200D\uFEFF]/g, '')
+        .trim();
+    if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) {
+        v = v.slice(1, -1).trim();
+    }
+    return v;
+}
+
+function parseCSVRows(text) {
+    const rows = [];
+    let row = [];
+    let cur = '';
+    let quoted = false;
+    const input = normalizeRemoteCSVText(text);
+
+    for (let i = 0; i < input.length; i++) {
+        const ch = input[i];
+        if (ch === '"') {
+            if (quoted && input[i + 1] === '"') {
+                cur += '"';
+                i++;
+            } else {
+                quoted = !quoted;
+            }
+        } else if (ch === ',' && !quoted) {
+            row.push(cleanCSVCell(cur));
+            cur = '';
+        } else if (ch === '\n' && !quoted) {
+            row.push(cleanCSVCell(cur));
+            cur = '';
+            if (row.some(v => v !== '')) rows.push(row);
+            row = [];
+        } else {
+            cur += ch;
+        }
+    }
+
+    row.push(cleanCSVCell(cur));
+    if (row.some(v => v !== '')) rows.push(row);
+    return rows;
+}
+
+function parseCSVLine(line) {
+    return parseCSVRows(line)[0] || [];
+}
+
+function normalizeCSVHeader(name) {
+    return cleanCSVCell(name).toLowerCase().replace(/[\s_\uFEFF\-]+/g, '');
+}
+
+function normalizeCountryCode(value) {
+    return cleanCSVCell(value).toUpperCase();
+}
+
+function pickCSVColumn(headers, aliases) {
+    const normalized = headers.map(normalizeCSVHeader);
+    const aliasSet = new Set(aliases.map(normalizeCSVHeader));
+    return normalized.findIndex(h => aliasSet.has(h));
+}
+
+function isIPv4(ip) {
+    return /^\d{1,3}(?:\.\d{1,3}){3}$/.test(String(ip || '').trim()) &&
+        String(ip).split('.').every(o => { const n = Number(o); return n >= 0 && n <= 255; });
+}
+
+function normalizePort(port, defaultPort = '443') {
+    const raw = cleanCSVCell(port);
+    if (/^\d{1,5}$/.test(raw)) {
+        const n = Number(raw);
+        if (n >= 1 && n <= 65535) return raw;
+    }
+    return String(defaultPort || '443');
+}
+
+function extractRemoteCSVIPs(text, options = {}) {
+    const expectedCountry = normalizeCountryCode(options.cfCountry || '');
+    const defaultPort = String(options.defaultPort || '443');
+    const rows = parseCSVRows(text);
+    if (!rows.length) return '';
+
+    const headers = rows[0];
+    let ipIdx = pickCSVColumn(headers, ['IP', 'ip', 'address', '地址', 'IP地址']);
+    let portIdx = pickCSVColumn(headers, ['端口', 'port']);
+    let countryIdx = pickCSVColumn(headers, ['CF归属国', 'cf归属国', 'CF国家', 'cfCountry', 'country', '归属国', '国家']);
+    const hasHeader = ipIdx !== -1 || portIdx !== -1 || countryIdx !== -1;
+
+    // 兼容该 result.csv 的固定 schema：IP,cf-meta-ip,端口,速度(Mbps),CF归属国,机房,...
+    if (hasHeader) {
+        if (ipIdx === -1) ipIdx = 0;
+        if (portIdx === -1) portIdx = 2;
+        if (countryIdx === -1) countryIdx = 4;
+    } else {
+        ipIdx = 0;
+        portIdx = 2;
+        countryIdx = 4;
+    }
+
+    const dataRows = hasHeader ? rows.slice(1) : rows;
+    const result = new Map();
+
+    for (const row of dataRows) {
+        const ip = cleanCSVCell(row[ipIdx]);
+        const port = normalizePort(row[portIdx], defaultPort);
+        const country = normalizeCountryCode(row[countryIdx]);
+
+        if (!isIPv4(ip)) continue;
+        // 关键：严格按“CF归属国”列过滤；比如 expectedCountry=US 时，CA 行必须被过滤掉。
+        if (expectedCountry && country !== expectedCountry) continue;
+
+        const key = `${ip}:${port}`;
+        result.set(key, `${key} # CF归属国 ${country || '-'}`);
+    }
+
+    return Array.from(result.values()).join('\n');
+}
+
+async function loadFromRemoteUrl(url, options = {}) {
     try {
         const parsed = new URL(url);
         if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return '';
@@ -1159,6 +1296,11 @@ async function loadFromRemoteUrl(url) {
         });
         if (r.ok) {
             const text = await r.text();
+            const path = new URL(url).pathname.toLowerCase();
+            const contentType = r.headers.get('content-type') || '';
+            if (path.endsWith('.csv') || contentType.includes('csv')) {
+                return extractRemoteCSVIPs(text, options);
+            }
             return await cleanIPListAsync(text, false); // 不解析域名，只清洗IP格式
         }
     } catch (e) {
