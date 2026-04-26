@@ -1,5 +1,5 @@
 /**
- * DDNS Pro & Proxy IP Manager v8.2 DNS First Batch Optimized
+ * DDNS Pro & Proxy IP Manager v8.3 CF Error Detail Fix
  */
 
 // ==================== 默认配置（环境变量未设置时使用） ====================
@@ -2141,12 +2141,40 @@ function buildResultMap(targets, results) {
 }
 
 async function fetchCF(config, path, method = 'GET', body = null) {
+    const result = await fetchCFDetailed(config, path, method, body);
+    return result.ok ? result.result : null;
+}
+
+function formatCFError(result) {
+    if (!result) return '未知错误';
+    if (result.configError) return 'Cloudflare 配置不完整：缺少 API Token 或 Zone ID';
+    if (result.exception) return result.error || 'Cloudflare API 请求异常';
+    const parts = [];
+    if (result.status) parts.push(`HTTP ${result.status}`);
+    if (Array.isArray(result.errors) && result.errors.length) {
+        parts.push(result.errors.map(e => e?.message || e?.code || JSON.stringify(e)).filter(Boolean).join('; '));
+    }
+    if (Array.isArray(result.messages) && result.messages.length) {
+        parts.push(result.messages.map(e => e?.message || e?.code || JSON.stringify(e)).filter(Boolean).join('; '));
+    }
+    if (!parts.length && result.error) parts.push(result.error);
+    if (!parts.length && result.rawText) parts.push(String(result.rawText).slice(0, 300));
+    return parts.filter(Boolean).join(' · ') || '未知错误';
+}
+
+async function fetchCFDetailed(config, path, method = 'GET', body = null) {
     if (!config.apiKey || !config.zoneId) {
-        console.error('❌ Cloudflare配置不完整:', {
-            apiKey: !!config.apiKey,
-            zoneId: !!config.zoneId
-        });
-        return null;
+        const detail = {
+            ok: false,
+            configError: true,
+            path,
+            method,
+            error: 'Cloudflare配置不完整',
+            result: null,
+            errors: [{ message: '缺少 CF_API_TOKEN/CF_KEY 或 CF_ZONE_ID/CF_ZONEID' }]
+        };
+        console.error('❌ Cloudflare配置不完整:', { apiKey: !!config.apiKey, zoneId: !!config.zoneId });
+        return detail;
     }
 
     const headers = {
@@ -2154,33 +2182,27 @@ async function fetchCF(config, path, method = 'GET', body = null) {
         'Content-Type': 'application/json'
     };
     const init = { method, headers };
-    if (body) init.body = JSON.stringify(body);
+    if (body !== null && body !== undefined) init.body = JSON.stringify(body);
 
     try {
-        const r = await fetch(`https://api.cloudflare.com/client/v4${path}`, init);
-        const d = await r.json();
-
-        if (!d.success) {
-            console.error('❌ Cloudflare API错误:', {
-                path,
-                method,
-                errors: d.errors,
-                messages: d.messages
-            });
-            return null;
+        const response = await fetch(`https://api.cloudflare.com/client/v4${path}`, init);
+        const rawText = await response.text();
+        let payload = null;
+        try { payload = rawText ? JSON.parse(rawText) : null; } catch { payload = null; }
+        const ok = response.ok && payload?.success === true;
+        const detail = { ok, status: response.status, path, method, result: payload?.result ?? null, errors: payload?.errors || [], messages: payload?.messages || [], raw: payload, rawText };
+        if (!ok) {
+            console.error('❌ Cloudflare API错误:', { path, method, status: response.status, errors: detail.errors, messages: detail.messages, raw: rawText?.slice?.(0, 500) });
         }
-
-        return d.result;
+        return detail;
     } catch (e) {
-        console.error('❌ Cloudflare API请求失败:', {
-            path,
-            method,
-            error: e.message
-        });
-        return null;
+        const detail = { ok: false, exception: true, path, method, result: null, error: e?.message || String(e), errors: [{ message: e?.message || String(e) }] };
+        console.error('❌ Cloudflare API请求失败:', { path, method, error: detail.error });
+        return detail;
     }
 }
 
+async function getCandidateIPs
 async function getCandidateIPs(env, target, addLog, poolKey) {
     const pool = await requireKV(env).get(poolKey) || '';
     
@@ -2329,8 +2351,14 @@ async function maintainRecordsCommon(options) {
                 addLog(`  ✅ ${candidate} - 当前 DNS 可用 ${checkResult.colo || ''} (${checkResult.responseTime || 0}ms)`);
             } else {
                 report.removed.push({ ip: item.addr, reason: checkResult.message || '外部检测 success=false' });
-                await deleteRecord(item.id);
-                addLog(`  ❌ ${candidate} - 当前 DNS 失效，已从 DNS 移除；IP 池暂不删除`);
+                addLog(`  ❌ ${candidate} - 当前 DNS 检测失效，准备从 DNS 移除；IP 池暂不删除`);
+                const deleted = await deleteRecord(item);
+                if (deleted?.success) {
+                    addLog(`  ✅ ${item.ip || item.addr} - 已从 Cloudflare DNS 移除`);
+                } else {
+                    addLog(`  ⚠️ 删除 A 记录失败: ${item.id || '无记录ID'}，原因：${deleted?.error || '未知错误'}`);
+                    report.deleteFailed = (report.deleteFailed || 0) + 1;
+                }
             }
         }
     } else {
@@ -2379,10 +2407,15 @@ async function maintainRecordsCommon(options) {
             if (checkResult.success === true) {
                 updateCheckStateAfterResult(checkState, ipPort, checkResult, config);
                 const parsed = splitHostPort(ipPort);
-                await addRecord(parsed.host);
-                validIPs.push(parsed.host);
-                report.added.push({ ip: ipPort, colo: checkResult.colo || 'N/A', time: checkResult.responseTime || '-' });
-                addLog(`  ✅ ${ipPort} - success=true，用于 DNS 更新 ${checkResult.colo || ''} (${checkResult.responseTime || 0}ms)`);
+                const added = await addRecord(parsed.host);
+                if (added?.success) {
+                    validIPs.push(parsed.host);
+                    report.added.push({ ip: ipPort, colo: checkResult.colo || 'N/A', time: checkResult.responseTime || '-' });
+                    addLog(`  ✅ ${ipPort} - success=true，已加入 DNS ${checkResult.colo || ''} (${checkResult.responseTime || 0}ms)`);
+                } else {
+                    addLog(`  ⚠️ 添加 A 记录失败: ${parsed.host}，原因：${added?.error || '未知错误'}`);
+                    report.addFailed = (report.addFailed || 0) + 1;
+                }
             } else {
                 const moved = await maybeMoveFailedToTrash({ env, poolKey, poolList, ipAddr: ipPort, reason: '补充检测失败', checkResult, state: checkState, config, addLog });
                 poolList = moved.poolList;
@@ -2413,17 +2446,17 @@ async function maintainRecordsCommon(options) {
 async function maintainARecords(env, target, addLog, report, poolKey, checkFn, config, checkState) {
     addLog(`📋 维护A记录: ${target.domain}:${target.port} (最小活跃数: ${target.minActive})`);
 
-    const records = await fetchCF(config, `/zones/${config.zoneId}/dns_records?name=${target.domain}&type=A`);
+    const recordQuery = await fetchCFDetailed(config, `/zones/${config.zoneId}/dns_records?name=${encodeURIComponent(target.domain)}&type=A`);
 
-    if (records === null) {
-        addLog(`❌ 无法获取A记录 - 请检查CF配置`);
+    if (!recordQuery.ok) {
+        addLog(`❌ 获取 A 记录失败: ${formatCFError(recordQuery)}`);
         report.configError = true;
         return;
     }
 
+    const records = Array.isArray(recordQuery.result) ? recordQuery.result : [];
     addLog(`当前A记录: ${records.length} 条`);
 
-    // 使用通用维护逻辑
     await maintainRecordsCommon({
         env,
         target,
@@ -2431,20 +2464,26 @@ async function maintainARecords(env, target, addLog, report, poolKey, checkFn, c
         report,
         poolKey,
         checkFn,
-        getCurrentIPs: () => records.map(({ id, content }) => ({ id, addr: `${content}:${target.port}`, ip: content })),
-        deleteRecord: async (id) => {
-            const r = await fetchCF(config, `/zones/${config.zoneId}/dns_records/${id}`, 'DELETE');
-            if (r === null) addLog(`  ⚠️ 删除A记录失败: ${id}`);
+        getCurrentIPs: () => records
+            .filter(({ content }) => !!content)
+            .map(({ id, content }) => ({ id, addr: `${content}:${target.port}`, ip: content })),
+        deleteRecord: async (record) => {
+            const id = typeof record === 'string' ? record : record?.id;
+            if (!id) return { success: false, error: '缺少 Cloudflare DNS record id，已跳过删除' };
+            const r = await fetchCFDetailed(config, `/zones/${config.zoneId}/dns_records/${id}`, 'DELETE');
+            if (!r.ok) return { success: false, error: formatCFError(r), detail: r };
+            return { success: true, detail: r };
         },
         addRecord: async (ip) => {
-            const r = await fetchCF(config, `/zones/${config.zoneId}/dns_records`, 'POST', {
+            const r = await fetchCFDetailed(config, `/zones/${config.zoneId}/dns_records`, 'POST', {
                 type: 'A',
                 name: target.domain,
                 content: ip,
                 ttl: 60,
                 proxied: false
             });
-            if (r === null) addLog(`  ⚠️ 添加A记录失败: ${ip}`);
+            if (!r.ok) return { success: false, error: formatCFError(r), detail: r };
+            return { success: true, detail: r };
         },
         shouldSkipCandidate: (ipPort, activeList) => {
             const [ip, port] = ipPort.split(':');
@@ -2904,7 +2943,19 @@ async function maintainAllDomains(env, isManual = false, config) {
             }
         }
         
-        addLog(`✅ 完成: ${report.afterActive}/${target.minActive}`);
+        if (report.configError) {
+            addLog(`❌ 维护失败: ${report.afterActive}/${target.minActive}`);
+            report.status = 'failed';
+        } else if (report.afterActive >= target.minActive) {
+            addLog(`✅ 维护成功: ${report.afterActive}/${target.minActive}`);
+            report.status = 'success';
+        } else if (report.afterActive > 0) {
+            addLog(`⚠️ 维护未达标: ${report.afterActive}/${target.minActive}`);
+            report.status = 'partial';
+        } else {
+            addLog(`❌ 维护失败: ${report.afterActive}/${target.minActive}`);
+            report.status = 'failed';
+        }
         allReports.push(report);
     }
 
