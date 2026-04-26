@@ -565,7 +565,11 @@ async function handleLoadRemoteUrl(request) {
     const options = {
         cfCountry: body.cfCountry || body.country || '',
         port: body.port || body.remotePort || body.defaultPort || '443',
-        defaultPort: body.defaultPort || body.port || '443'
+        defaultPort: body.defaultPort || body.port || '443',
+        format: body.format || body.type || 'auto',
+        ipColumn: body.ipColumn || body.ipField || '',
+        portColumn: body.portColumn || body.portField || '',
+        countryColumn: body.countryColumn || body.countryField || ''
     };
 
     const ips = await loadFromRemoteUrl(url, options);
@@ -1232,20 +1236,76 @@ function normalizePort(port, defaultPort = '443') {
     return String(defaultPort || '443');
 }
 
-function extractRemoteCSVIPs(text, options = {}) {
-    const expectedCountry = normalizeCountryCode(options.cfCountry || '');
+function pickConfiguredCSVColumn(headers, selector, aliases, fallbackIndex = -1) {
+    const cleanSelector = cleanCSVCell(selector);
+    if (cleanSelector) {
+        if (/^\d+$/.test(cleanSelector)) {
+            const idx = Number(cleanSelector);
+            if (idx >= 0 && idx < headers.length) return idx;
+        }
+        const normalizedSelector = normalizeCSVHeader(cleanSelector);
+        const normalized = headers.map(normalizeCSVHeader);
+        const exact = normalized.findIndex(h => h === normalizedSelector);
+        if (exact !== -1) return exact;
+    }
+    const picked = pickCSVColumn(headers, aliases);
+    return picked !== -1 ? picked : fallbackIndex;
+}
+
+function normalizeRemoteFormat(value) {
+    const v = cleanCSVCell(value).toLowerCase();
+    if (['csv', 'txt', 'text', 'plain'].includes(v)) return v === 'text' || v === 'plain' ? 'txt' : v;
+    return 'auto';
+}
+
+function extractRemoteTextIPs(text, options = {}) {
     const expectedPort = normalizePort(options.port || options.remotePort || options.defaultPort || '443', '443');
-    const defaultPort = String(options.defaultPort || expectedPort || '443');
+    const defaultPort = normalizePort(options.defaultPort || expectedPort || '443', '443');
+    const result = new Map();
+    const lines = String(text || '')
+        .replace(/^\uFEFF/, '')
+        .replace(/\r\n/g, '\n')
+        .replace(/\r/g, '\n')
+        .split('\n');
+
+    for (let rawLine of lines) {
+        let line = String(rawLine || '').trim();
+        if (!line || line.startsWith('#') || line.startsWith('//')) continue;
+
+        const commentMatch = line.match(/\s+#\s*(.+)$/);
+        const comment = commentMatch ? ` # ${commentMatch[1].trim()}` : '';
+        line = line.replace(/\s+#.*$/, '').trim();
+
+        const match = line.match(/(\d{1,3}(?:\.\d{1,3}){3})(?:\s*(?:[:：,|\s])\s*(\d{1,5}))?/);
+        if (!match) continue;
+
+        const ip = match[1];
+        if (!isIPv4(ip)) continue;
+
+        const port = match[2] ? normalizePort(match[2], defaultPort) : defaultPort;
+        if (expectedPort && port !== expectedPort) continue;
+
+        const key = `${ip}:${port}`;
+        result.set(key, `${key}${comment}`);
+    }
+
+    return Array.from(result.values()).join('\n');
+}
+
+function extractRemoteCSVIPs(text, options = {}) {
+    const expectedCountry = normalizeCountryCode(options.cfCountry || options.country || '');
+    const expectedPort = normalizePort(options.port || options.remotePort || options.defaultPort || '443', '443');
+    const defaultPort = normalizePort(options.defaultPort || expectedPort || '443', '443');
     const rows = parseCSVRows(text);
     if (!rows.length) return '';
 
     const headers = rows[0];
-    let ipIdx = pickCSVColumn(headers, ['IP', 'ip', 'address', '地址', 'IP地址']);
-    let portIdx = pickCSVColumn(headers, ['端口', 'port']);
-    let countryIdx = pickCSVColumn(headers, ['CF归属国', 'cf归属国', 'CF国家', 'cfCountry', 'country', '归属国', '国家']);
+    let ipIdx = pickConfiguredCSVColumn(headers, options.ipColumn, ['IP', 'ip', 'address', '地址', 'IP地址'], -1);
+    let portIdx = pickConfiguredCSVColumn(headers, options.portColumn, ['端口', 'port'], -1);
+    let countryIdx = pickConfiguredCSVColumn(headers, options.countryColumn, ['CF归属国', 'cf归属国', 'CF国家', 'cfCountry', 'country', '归属国', '国家'], -1);
     const hasHeader = ipIdx !== -1 || portIdx !== -1 || countryIdx !== -1;
 
-    // 兼容该 result.csv 的固定 schema：IP,cf-meta-ip,端口,速度(Mbps),CF归属国,机房,...
+    // 兼容 xgonce/Cloudflare_IP 的固定 schema：IP,cf-meta-ip,端口,速度(Mbps),CF归属国,机房,...
     if (hasHeader) {
         if (ipIdx === -1) ipIdx = 0;
         if (portIdx === -1) portIdx = 2;
@@ -1265,13 +1325,12 @@ function extractRemoteCSVIPs(text, options = {}) {
         const country = normalizeCountryCode(row[countryIdx]);
 
         if (!isIPv4(ip)) continue;
-        // 严格按“CF归属国”列过滤；比如 expectedCountry=US 时，CA 行必须被过滤掉。
         if (expectedCountry && country !== expectedCountry) continue;
-        // 严格按“端口”列过滤；defaultPort 只在端口列缺失/无效时兜底，不代表允许其他端口混入。
         if (expectedPort && port !== expectedPort) continue;
 
         const key = `${ip}:${port}`;
-        result.set(key, `${key} # CF归属国 ${country || '-'}`);
+        const suffix = country ? ` # CF归属国 ${country}` : '';
+        result.set(key, `${key}${suffix}`);
     }
 
     return Array.from(result.values()).join('\n');
@@ -1287,8 +1346,8 @@ async function loadFromRemoteUrl(url, options = {}) {
             hostname.startsWith('10.') ||
             hostname.startsWith('192.168.') ||
             /^172\.(1[6-9]|2\d|3[01])\./.test(hostname) ||
-            hostname.startsWith('169.254.') ||   // 链路本地地址 (AWS/GCP 元数据服务等)
-            hostname.startsWith('100.64.') ||    // 运营商级 NAT (RFC 6598)
+            hostname.startsWith('169.254.') ||
+            hostname.startsWith('100.64.') ||
             hostname === 'metadata.google.internal' ||
             hostname === '0.0.0.0' ||
             hostname === '::1' ||
@@ -1306,11 +1365,19 @@ async function loadFromRemoteUrl(url, options = {}) {
         if (r.ok) {
             const text = await r.text();
             const path = new URL(url).pathname.toLowerCase();
-            const contentType = r.headers.get('content-type') || '';
+            const contentType = (r.headers.get('content-type') || '').toLowerCase();
+            const format = normalizeRemoteFormat(options.format || options.type || 'auto');
+
+            if (format === 'csv') return extractRemoteCSVIPs(text, options);
+            if (format === 'txt') return extractRemoteTextIPs(text, options);
+
+            // auto：优先依据扩展名/Content-Type；否则先尝试 TXT 行提取，失败再尝试 CSV。
             if (path.endsWith('.csv') || contentType.includes('csv')) {
-                return extractRemoteCSVIPs(text, options);
+                const csv = extractRemoteCSVIPs(text, options);
+                return csv || extractRemoteTextIPs(text, options);
             }
-            return await cleanIPListAsync(text, false); // 不解析域名，只清洗IP格式
+            const txt = extractRemoteTextIPs(text, options);
+            return txt || extractRemoteCSVIPs(text, options);
         }
     } catch (e) {
         console.error(`❌ 远程加载失败 ${url}:`, e);
@@ -1880,37 +1947,130 @@ async function savePoolText(env, poolKey, poolText, mode = 'replace') {
     return incoming.size;
 }
 
-async function autoUpdateCountryPools(env, config) {
-    const enabledRaw = String(env.REMOTE_UPDATE_ENABLED || '').trim().toLowerCase();
+function parseRemoteSourceObjectMap(raw) {
+    const map = new Map();
+    if (!raw) return map;
+    try {
+        const parsed = JSON.parse(raw);
+        const items = Array.isArray(parsed)
+            ? parsed
+            : Object.entries(parsed).map(([domain, cfg]) => ({ domain, ...(typeof cfg === 'string' ? { url: cfg } : cfg) }));
+        for (const item of items) {
+            if (!item || typeof item !== 'object') continue;
+            const domain = normalizeTargetDomainName(item.domain || item.host || item.name);
+            const url = cleanCSVCell(item.url || item.source || item.href);
+            if (!domain || !url) continue;
+            map.set(domain, item);
+        }
+    } catch { }
+    return map;
+}
+
+function parseRemoteDomainSources(env, config) {
+    const raw = String(env.REMOTE_DOMAIN_SOURCES || env.REMOTE_DOMAIN_SOURCE || '').trim();
+    const jsonRaw = String(env.REMOTE_DOMAIN_SOURCES_JSON || '').trim();
+    const explicit = parseRemoteSourceObjectMap(jsonRaw || (raw.startsWith('[') || raw.startsWith('{') ? raw : ''));
+
+    if (raw && explicit.size === 0) {
+        // 行格式：domain|country|port|format|url
+        // 多条可用换行或分号分隔。TXT 只有 IP 时会自动补 port。
+        raw.split(/[;\n]+/).map(s => s.trim()).filter(Boolean).forEach(line => {
+            const parts = line.split('|').map(v => v.trim());
+            if (parts.length < 2) return;
+            const domain = normalizeTargetDomainName(parts[0]);
+            const url = parts.length >= 5 ? parts.slice(4).join('|') : parts[1];
+            if (!domain || !url) return;
+            explicit.set(domain, {
+                domain,
+                url,
+                country: parts.length >= 5 ? parts[1] : '',
+                port: parts.length >= 5 ? parts[2] : '',
+                format: parts.length >= 5 ? parts[3] : 'auto'
+            });
+        });
+    }
+
     const countryDomainMap = parseCountryDomainMap(env, config);
-    const autoEnabled = enabledRaw ? ['1', 'true', 'yes', 'on'].includes(enabledRaw) : countryDomainMap.size > 0;
-    if (!autoEnabled || countryDomainMap.size === 0) return { success: false, skipped: true, reason: 'not_enabled_or_no_mapping' };
+    const defaultUrl = env.REMOTE_IP_URL || 'https://raw.githubusercontent.com/xgonce/Cloudflare_IP/refs/heads/main/result.csv';
+    const defaultPort = String(env.REMOTE_PORT || '443').trim() || '443';
+    const sources = new Map();
 
-    const remoteUrl = env.REMOTE_IP_URL || 'https://raw.githubusercontent.com/xgonce/Cloudflare_IP/refs/heads/main/result.csv';
-    const remotePort = String(env.REMOTE_PORT || '443').trim() || '443';
+    for (const target of config.targets || []) {
+        const domain = normalizeTargetDomainName(target.domain);
+        if (!domain) continue;
+        const explicitCfg = explicit.get(domain) || {};
+        const country = normalizeCountryCode(explicitCfg.country || explicitCfg.cfCountry || countryDomainMap.get(domain) || inferCountryFromDomain(domain));
+        const port = String(explicitCfg.port || explicitCfg.remotePort || target.port || defaultPort).trim() || defaultPort;
+        const url = cleanCSVCell(explicitCfg.url || explicitCfg.source || defaultUrl);
+        const poolKey = cleanCSVCell(explicitCfg.poolKey || explicitCfg.pool || (country ? `pool_${country}` : 'pool'));
+        sources.set(domain, {
+            domain,
+            url,
+            country,
+            cfCountry: country,
+            port,
+            defaultPort: String(explicitCfg.defaultPort || port || defaultPort).trim() || defaultPort,
+            format: explicitCfg.format || explicitCfg.type || 'auto',
+            ipColumn: explicitCfg.ipColumn || explicitCfg.ipField || '',
+            portColumn: explicitCfg.portColumn || explicitCfg.portField || '',
+            countryColumn: explicitCfg.countryColumn || explicitCfg.countryField || '',
+            poolKey
+        });
+    }
+
+    return sources;
+}
+
+function getDomainsNeedingRemoteUpdate(result) {
+    const domains = new Set();
+    if (!result || !Array.isArray(result.reports)) return domains;
+    for (const report of result.reports) {
+        if (!report || report.configError) continue;
+        const afterActive = Number(report.afterActive || 0);
+        const minActive = Number(report.minActive || 0);
+        if (report.poolExhausted === true && afterActive < minActive) {
+            const domain = normalizeTargetDomainName(report.domain || report.target?.domain);
+            if (domain) domains.add(domain);
+        }
+    }
+    return domains;
+}
+
+async function autoUpdateCountryPools(env, config, onlyDomains = null) {
+    const enabledRaw = String(env.REMOTE_UPDATE_ENABLED || '').trim().toLowerCase();
+    const sourceMap = parseRemoteDomainSources(env, config);
+    const autoEnabled = enabledRaw ? ['1', 'true', 'yes', 'on'].includes(enabledRaw) : sourceMap.size > 0;
+    if (!autoEnabled || sourceMap.size === 0) return { success: false, skipped: true, reason: 'not_enabled_or_no_sources' };
+
     const mode = String(env.REMOTE_UPDATE_MODE || 'replace').trim().toLowerCase() === 'append' ? 'append' : 'replace';
-
     const mappingJson = await env.IP_DATA.get('domain_pool_mapping') || '{}';
     const domainPoolMapping = safeJSONParse(mappingJson, {});
     const reports = [];
-    const countryCache = new Map();
+    const sourceCache = new Map();
 
-    for (const [domain, country] of countryDomainMap.entries()) {
-        const poolKey = 'pool_' + country;
-        if (!countryCache.has(country)) {
-            const ips = await loadFromRemoteUrl(remoteUrl, {
-                cfCountry: country,
-                port: remotePort,
-                defaultPort: remotePort
-            });
-            countryCache.set(country, ips);
+    for (const [domain, source] of sourceMap.entries()) {
+        if (onlyDomains && onlyDomains.size > 0 && !onlyDomains.has(domain)) continue;
+        const poolKey = source.poolKey || (source.country ? `pool_${source.country}` : 'pool');
+        const cacheKey = JSON.stringify({
+            url: source.url,
+            country: source.country || '',
+            port: source.port || '',
+            defaultPort: source.defaultPort || '',
+            format: source.format || 'auto',
+            ipColumn: source.ipColumn || '',
+            portColumn: source.portColumn || '',
+            countryColumn: source.countryColumn || ''
+        });
+        if (!sourceCache.has(cacheKey)) {
+            const ips = await loadFromRemoteUrl(source.url, source);
+            sourceCache.set(cacheKey, ips);
         }
 
-        const ips = countryCache.get(country) || '';
+        const ips = sourceCache.get(cacheKey) || '';
         const count = await savePoolText(env, poolKey, ips, mode);
         domainPoolMapping[domain] = poolKey;
-        reports.push({ domain, country, poolKey, count, port: remotePort });
-        console.log('🌐 远程IP池已更新: ' + domain + ' <= ' + country + ', ' + poolKey + ', ' + count + '条');
+        reports.push({ domain, country: source.country || '', poolKey, count, port: source.port, format: source.format || 'auto', source: source.url });
+        console.log('🌐 远程IP池已更新: ' + domain + ' <= ' + (source.country || '-') + ', ' + poolKey + ', ' + count + '条, ' + source.url);
     }
 
     await env.IP_DATA.put('domain_pool_mapping', JSON.stringify(domainPoolMapping, null, 2));
@@ -1929,15 +2089,15 @@ function scheduledReportNeedsRemoteUpdate(result) {
 }
 
 async function ensureCountryDomainPoolMapping(env, config) {
-    const countryDomainMap = parseCountryDomainMap(env, config);
-    if (countryDomainMap.size === 0) return { updated: false, mapping: {} };
+    const sourceMap = parseRemoteDomainSources(env, config);
+    if (sourceMap.size === 0) return { updated: false, mapping: {} };
 
     const mappingJson = await env.IP_DATA.get('domain_pool_mapping') || '{}';
     const domainPoolMapping = safeJSONParse(mappingJson, {});
     let changed = false;
 
-    for (const [domain, country] of countryDomainMap.entries()) {
-        const poolKey = 'pool_' + country;
+    for (const [domain, source] of sourceMap.entries()) {
+        const poolKey = source.poolKey || (source.country ? `pool_${source.country}` : 'pool');
         if (domainPoolMapping[domain] !== poolKey) {
             domainPoolMapping[domain] = poolKey;
             changed = true;
@@ -1950,6 +2110,7 @@ async function ensureCountryDomainPoolMapping(env, config) {
 
     return { updated: changed, mapping: domainPoolMapping };
 }
+
 
 async function scheduledMaintainWithConditionalRemoteUpdate(env, config) {
     // 先确保 US.xxx.xx / KR.xxx.xx 这类域名能自动映射到 pool_US / pool_KR。
@@ -1964,11 +2125,12 @@ async function scheduledMaintainWithConditionalRemoteUpdate(env, config) {
         return firstResult;
     }
 
-    console.log('📦 本地IP池无可用候选或无法补足目标数量，开始拉取远程CSV更新国家池');
-    const updateResult = await autoUpdateCountryPools(env, config);
+    const needDomains = getDomainsNeedingRemoteUpdate(firstResult);
+    console.log('📦 本地IP池无可用候选或无法补足目标数量，开始按域名远程源更新: ' + Array.from(needDomains).join(', '));
+    const updateResult = await autoUpdateCountryPools(env, config, needDomains);
 
-    if (!updateResult || updateResult.skipped) {
-        console.log('⚠️ 远程CSV更新被跳过: ' + (updateResult?.reason || 'unknown'));
+    if (!updateResult || updateResult.skipped || !updateResult.reports || updateResult.reports.length === 0) {
+        console.log('⚠️ 远程更新被跳过: ' + (updateResult?.reason || 'unknown'));
         return firstResult;
     }
 
