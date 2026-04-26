@@ -3,7 +3,7 @@
  * Frontend is deployed as remote static assets; Worker serves it through same-origin proxy.
  */
 
-const VERSION = '22.0.0-mobile-compact';
+const VERSION = '23.0.0-glass-grid';
 const JSON_TYPE = 'application/json; charset=UTF-8';
 const CHECK_CACHE_KEY = 'check_cache_v2';
 const CHECK_FAIL_KEY = 'check_fail_v2';
