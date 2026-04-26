@@ -1,9 +1,9 @@
 /**
- * DDNS Pro v13 · Split DNS Maintenance API
- * Cloudflare Worker only. Frontend is deployed separately as static assets.
+ * DDNS Pro v19 · Worker Admin Proxy + DNS Maintenance API
+ * Frontend is deployed as remote static assets; Worker serves it through same-origin proxy.
  */
 
-const VERSION = '14.0.0-split-redirect';
+const VERSION = '19.0.0-worker-admin-proxy';
 const JSON_TYPE = 'application/json; charset=UTF-8';
 const CHECK_CACHE_KEY = 'check_cache_v2';
 const CHECK_FAIL_KEY = 'check_fail_v2';
@@ -13,7 +13,7 @@ const DEFAULTS = Object.freeze({
   checkApi: 'https://cf.090227.xyz/check?proxyip=',
   checkApiBackup: 'https://api.090227.xyz/check?proxyip=',
   dohApi: 'https://cloudflare-dns.com/dns-query',
-  adminOrigin: '',
+  adminOrigin: 'https://mlyo.github.io',
   dnsTtl: 60,
   proxied: false,
   defaultMinActive: 3,
@@ -252,34 +252,86 @@ function handleAuthLogout() {
   });
 }
 
-function frontendNotServedResponse(config) {
-  return fail(
-    'FRONTEND_NOT_SERVED_BY_WORKER',
-    config.adminOrigin
-      ? `前端已分离，请打开 ADMIN_ORIGIN：${config.adminOrigin}`
-      : '前端已分离：Worker 不提供 /admin 静态资源。请部署 frontend/ 到 Pages，或配置 ADMIN_ORIGIN 用于跳转。',
-    404
-  );
+function staticOrigin(config) {
+  const origin = String(config.adminOrigin || DEFAULTS.adminOrigin || '').trim().replace(/\/+$/, '');
+  if (!origin) return '';
+  try {
+    const url = new URL(origin);
+    if (url.protocol !== 'https:') return '';
+    return url.origin + url.pathname.replace(/\/+$/, '');
+  } catch {
+    return '';
+  }
 }
 
-function buildFrontendRedirectUrl(requestUrl, config) {
-  if (!config.adminOrigin) return '';
+function staticPathCandidates(pathname) {
+  const path = String(pathname || '/');
+  if (path === '/login' || path === '/login/' || path === '/login.html') {
+    return ['/login.html', '/login/', '/login/index.html'];
+  }
+  if (path === '/admin' || path === '/admin/') {
+    return ['/admin/index.html', '/admin/'];
+  }
+  if (path.startsWith('/admin/')) return [path];
+  if (path === '/' || path === '') return ['/admin/index.html', '/admin/'];
+  return [path];
+}
 
-  const adminBase = new URL(config.adminOrigin.endsWith('/') ? config.adminOrigin : `${config.adminOrigin}/`);
-  const target = new URL(adminBase.href);
+function copyStaticHeaders(originResponse, pathname, originUrl) {
+  const headers = new Headers(originResponse.headers);
+  headers.delete('content-security-policy');
+  headers.delete('content-security-policy-report-only');
+  headers.delete('x-frame-options');
+  headers.delete('set-cookie');
+  headers.set('X-Admin-Origin', originUrl.host);
+  headers.set('Vary', 'Cookie');
+  if (pathname === '/login' || pathname === '/login/' || pathname === '/login.html' || pathname === '/admin' || pathname === '/admin/' || pathname.endsWith('.html')) {
+    headers.set('Cache-Control', 'no-store');
+  } else if (!headers.has('Cache-Control')) {
+    headers.set('Cache-Control', 'public, max-age=600');
+  }
+  return headers;
+}
 
-  if (requestUrl.pathname === '/login' || requestUrl.pathname === '/login.html') {
-    target.pathname = joinUrlPath(adminBase.pathname, 'login.html');
-    target.searchParams.set('redirect', '/admin/');
-  } else {
-    target.pathname = joinUrlPath(adminBase.pathname, 'admin/');
-    for (const [key, value] of requestUrl.searchParams.entries()) {
-      if (key !== 'api') target.searchParams.set(key, value);
+async function fetchAdminStatic(request, config) {
+  const origin = staticOrigin(config);
+  if (!origin) return fail('ADMIN_ORIGIN_INVALID', 'ADMIN_ORIGIN 无效，请配置为 https://... 静态前端源站。', 500);
+
+  const requestUrl = new URL(request.url);
+  const originUrl = new URL(origin);
+  const candidates = staticPathCandidates(requestUrl.pathname);
+  let lastResponse = null;
+  for (const candidate of candidates) {
+    const target = new URL(originUrl.href);
+    target.pathname = joinUrlPath(originUrl.pathname, candidate);
+    target.search = requestUrl.search;
+    const headers = new Headers(request.headers);
+    headers.set('Host', target.host);
+    headers.set('Referer', target.origin + '/');
+    headers.set('Origin', target.origin);
+    headers.delete('Cookie');
+    headers.delete('Authorization');
+    headers.delete('X-Auth-Key');
+    const upstream = await fetch(target.href, {
+      method: 'GET',
+      headers,
+      redirect: 'follow',
+      cf: { cacheTtl: candidate.endsWith('.html') || candidate === '/admin/' || candidate === '/login/' ? 0 : 600 }
+    });
+    lastResponse = upstream;
+    if (upstream.status !== 404) {
+      return new Response(upstream.body, {
+        status: upstream.status,
+        statusText: upstream.statusText,
+        headers: copyStaticHeaders(upstream, requestUrl.pathname, target)
+      });
     }
   }
-
-  target.searchParams.set('api', requestUrl.origin);
-  return target.href;
+  return new Response(lastResponse?.body || 'Admin asset not found', {
+    status: lastResponse?.status || 404,
+    statusText: lastResponse?.statusText || 'Not Found',
+    headers: { 'Content-Type': 'text/plain; charset=UTF-8', 'Cache-Control': 'no-store' }
+  });
 }
 
 function joinUrlPath(basePath, childPath) {
@@ -287,6 +339,19 @@ function joinUrlPath(basePath, childPath) {
   const child = String(childPath || '').replace(/^\/+/, '');
   const path = `${base}/${child}`.replace(/\/+/g, '/');
   return path.startsWith('/') ? path : `/${path}`;
+}
+
+function localRedirect(location, headers = {}) {
+  return new Response('重定向中...', { status: 302, headers: { Location: location, ...headers } });
+}
+
+function redirectWithoutKey(url, setCookieValue = '') {
+  const clean = new URL(url.href);
+  clean.searchParams.delete('key');
+  const location = clean.pathname + clean.search + clean.hash;
+  const headers = new Headers({ Location: location || '/admin/' });
+  if (setCookieValue) headers.set('Set-Cookie', setCookieValue);
+  return new Response('重定向中...', { status: 302, headers });
 }
 
 
@@ -1226,16 +1291,40 @@ export default {
     if (url.pathname === '/favicon.ico') return new Response(null, { status: 204 });
     if (url.pathname === '/robots.txt') return new Response('User-agent: *\nDisallow: /\n', { headers: { 'Content-Type': 'text/plain; charset=UTF-8' } });
 
-    // 真正前后端分离：Worker 不托管前端文件；/admin 与 /login 只做轻量 302 跳转到独立前端。
-    if (url.pathname === '/') return withCors(await handleApiHome(config), request, env, config);
-    if (url.pathname === '/admin' || url.pathname.startsWith('/admin/') || url.pathname === '/login' || url.pathname === '/login.html') {
-      const redirectUrl = buildFrontendRedirectUrl(url, config);
-      if (redirectUrl) return Response.redirect(redirectUrl, 302);
-      return withCors(frontendNotServedResponse(config), request, env, config);
+    // Worker 同源入口：前端静态文件部署在 GitHub Pages/Pages，Worker 只做轻量反代，不内嵌 HTML/CSS/JS。
+    if (url.pathname === '/') return localRedirect('/admin/');
+
+    if (url.pathname === '/logout') {
+      return new Response('重定向中...', {
+        status: 302,
+        headers: {
+          'Location': '/login',
+          'Set-Cookie': 'ddns_auth=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Strict'
+        }
+      });
+    }
+
+    if (url.pathname === '/login' || url.pathname === '/login/' || url.pathname === '/login.html') {
+      const auth = await checkAuth(request, url, config);
+      if (request.method === 'POST') return await handleAuthLogin(request, config);
+      if (auth.enabled && auth.ok) return localRedirect('/admin/');
+      return await fetchAdminStatic(request, config);
+    }
+
+    if (url.pathname === '/admin') return localRedirect('/admin/' + url.search);
+    if (url.pathname.startsWith('/admin/')) {
+      const auth = await checkAuth(request, url, config);
+      const key = String(url.searchParams.get('key') || '').trim();
+      if (auth.enabled && key && key === config.authKey) {
+        const token = await sessionToken(request, config);
+        return redirectWithoutKey(url, authCookie(token));
+      }
+      if (auth.enabled && !auth.ok) return localRedirect('/login');
+      return await fetchAdminStatic(request, config);
     }
 
     if (!url.pathname.startsWith('/api/')) {
-      return withCors(fail('NOT_FOUND', '接口不存在；前端静态资源请部署 frontend/，不要部署到 Worker。', 404), request, env, config);
+      return withCors(fail('NOT_FOUND', '接口不存在', 404), request, env, config);
     }
 
     const publicApi = url.pathname === '/api/auth/login' || url.pathname === '/api/version' || url.pathname === '/api/health';
