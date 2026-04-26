@@ -212,10 +212,6 @@ function unauthorizedResponse(url) {
 }
 
 
-function getAdminOrigin(env) {
-    return (env.ADMIN_ORIGIN || 'https://mlyo.github.io').replace(/\/$/, '');
-}
-
 function htmlLoginPage() {
     return new Response(`<!doctype html>
 <html lang="zh-CN">
