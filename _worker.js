@@ -84,21 +84,35 @@ const JSON_CONTENT_TYPE = 'application/json; charset=UTF-8';
 const CF_ERROR_MSG = 'CF配置错误或API调用失败';
 const DEFAULT_ADMIN_ORIGIN = 'https://mlyo.github.io';
 
+function getKVBinding(env) {
+    const candidates = [
+        ['IP_DATA', env.IP_DATA],
+        ['KV', env.KV],
+        ['IPDATA', env.IPDATA],
+        ['KV_DATA', env.KV_DATA],
+    ];
+    for (const [name, store] of candidates) {
+        if (store && typeof store.get === 'function' && typeof store.put === 'function') {
+            return { name, store };
+        }
+    }
+    return { name: 'missing', store: null };
+}
+
 function getKV(env) {
-    return requireKV(env) || env.KV || env.IPDATA || env.KV_DATA || null;
+    return getKVBinding(env).store;
 }
 
 function hasKV(env) {
-    const kv = getKV(env);
-    return !!(kv && typeof kv.get === 'function' && typeof kv.put === 'function');
+    return !!getKV(env);
 }
 
 function requireKV(env) {
-    const kv = getKV(env);
-    if (!kv || typeof kv.get !== 'function' || typeof kv.put !== 'function') {
+    const { store } = getKVBinding(env);
+    if (!store) {
         throw new Error('KV 未绑定：请在 Worker 变量/绑定中绑定 KV Namespace，推荐变量名 IP_DATA。');
     }
-    return kv;
+    return store;
 }
 
 function getAdminOrigin(env) {
@@ -551,12 +565,13 @@ async function handleHealth(env, config) {
     let kv = false;
     let kvBinding = 'missing';
     try {
-        const store = getKV(env);
+        const binding = getKVBinding(env);
+        const store = binding.store;
+        kvBinding = binding.name;
         if (store && typeof store.get === 'function') {
             // 不传 cacheTtl，避免部分 Workers KV 环境因 cacheTtl 参数限制导致误判异常。
             await store.get('pool');
             kv = true;
-            kvBinding = env.IP_DATA ? 'IP_DATA' : (env.KV ? 'KV' : 'custom');
         }
     } catch (e) {
         kvBinding = e?.message || 'error';
