@@ -1,9 +1,9 @@
 /**
- * DDNS Pro v19 · Worker Admin Proxy + DNS Maintenance API
+ * DDNS Pro v21 · Worker Admin Proxy + DNS Maintenance API
  * Frontend is deployed as remote static assets; Worker serves it through same-origin proxy.
  */
 
-const VERSION = '19.0.0-worker-admin-proxy';
+const VERSION = '21.0.0-ui-reflow';
 const JSON_TYPE = 'application/json; charset=UTF-8';
 const CHECK_CACHE_KEY = 'check_cache_v2';
 const CHECK_FAIL_KEY = 'check_fail_v2';
@@ -285,11 +285,7 @@ function copyStaticHeaders(originResponse, pathname, originUrl) {
   headers.delete('set-cookie');
   headers.set('X-Admin-Origin', originUrl.host);
   headers.set('Vary', 'Cookie');
-  if (pathname === '/login' || pathname === '/login/' || pathname === '/login.html' || pathname === '/admin' || pathname === '/admin/' || pathname.endsWith('.html')) {
-    headers.set('Cache-Control', 'no-store');
-  } else if (!headers.has('Cache-Control')) {
-    headers.set('Cache-Control', 'public, max-age=600');
-  }
+  headers.set('Cache-Control', 'no-store');
   return headers;
 }
 
@@ -316,7 +312,7 @@ async function fetchAdminStatic(request, config) {
       method: 'GET',
       headers,
       redirect: 'follow',
-      cf: { cacheTtl: candidate.endsWith('.html') || candidate === '/admin/' || candidate === '/login/' ? 0 : 600 }
+      cf: { cacheTtl: 0, cacheEverything: false }
     });
     lastResponse = upstream;
     if (upstream.status !== 404) {
