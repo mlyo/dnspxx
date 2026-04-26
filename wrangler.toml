@@ -1,5 +1,5 @@
 name = "dnsproxyip-api"
-main = "src/index.js"
+main = "_worker.js"
 compatibility_date = "2025-04-01"
 
 # 绑定你的 KV 命名空间
