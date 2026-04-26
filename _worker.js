@@ -84,6 +84,23 @@ const JSON_CONTENT_TYPE = 'application/json; charset=UTF-8';
 const CF_ERROR_MSG = 'CF配置错误或API调用失败';
 const DEFAULT_ADMIN_ORIGIN = 'https://mlyo.github.io';
 
+function getKV(env) {
+    return requireKV(env) || env.KV || env.IPDATA || env.KV_DATA || null;
+}
+
+function hasKV(env) {
+    const kv = getKV(env);
+    return !!(kv && typeof kv.get === 'function' && typeof kv.put === 'function');
+}
+
+function requireKV(env) {
+    const kv = getKV(env);
+    if (!kv || typeof kv.get !== 'function' || typeof kv.put !== 'function') {
+        throw new Error('KV 未绑定：请在 Worker 变量/绑定中绑定 KV Namespace，推荐变量名 IP_DATA。');
+    }
+    return kv;
+}
+
 function getAdminOrigin(env) {
     return (env.ADMIN_ORIGIN || DEFAULT_ADMIN_ORIGIN).replace(/\/$/, '');
 }
@@ -525,24 +542,31 @@ function handleVersion(env, config) {
             version: '7.1-light',
             homeMode: (env.HOME_MODE || 'nginx'),
             authEnabled: !!(env.AUTH_KEY || '').trim(),
-            hasKv: !!env.IP_DATA
+            hasKv: hasKV(env)
         }
     });
 }
 
 async function handleHealth(env, config) {
     let kv = false;
+    let kvBinding = 'missing';
     try {
-        if (env.IP_DATA) {
-            await env.IP_DATA.get('pool', { cacheTtl: 0 });
+        const store = getKV(env);
+        if (store && typeof store.get === 'function') {
+            // 不传 cacheTtl，避免部分 Workers KV 环境因 cacheTtl 参数限制导致误判异常。
+            await store.get('pool');
             kv = true;
+            kvBinding = env.IP_DATA ? 'IP_DATA' : (env.KV ? 'KV' : 'custom');
         }
-    } catch (e) {}
+    } catch (e) {
+        kvBinding = e?.message || 'error';
+    }
     return jsonResponse({
         success: true,
         data: {
             ok: true,
             kv,
+            kvBinding,
             auth: !!(env.AUTH_KEY || '').trim(),
             targets: Array.isArray(config.targets) ? config.targets.length : 0,
             timestamp: new Date().toISOString()
@@ -555,7 +579,7 @@ async function handleGetPool(url, env) {
     const poolKey = url.searchParams.get('poolKey') || 'pool';
     const onlyCount = url.searchParams.get('onlyCount') === 'true';
     
-    const pool = await env.IP_DATA.get(poolKey) || '';
+    const pool = await requireKV(env).get(poolKey) || '';
     const count = pool.trim() ? pool.trim().split('\n').length : 0;
     
     if (onlyCount) {
@@ -577,7 +601,7 @@ async function handleSavePool(request, env, config) {
         return badRequest({ success: false, error: '没有有效IP' });
     }
 
-    const existingPool = await env.IP_DATA.get(poolKey) || '';
+    const existingPool = await requireKV(env).get(poolKey) || '';
     const existingMap = new Map();
 
     // 先加载现有IP
@@ -640,7 +664,7 @@ async function handleSavePool(request, env, config) {
     }
 
     const finalPool = Array.from(existingMap.values()).join('\n');
-    await env.IP_DATA.put(poolKey, finalPool);
+    await requireKV(env).put(poolKey, finalPool);
 
     return jsonResponse(responseData);
 }
@@ -892,10 +916,10 @@ async function handleMaintain(url, env, config) {
 }
 
 async function handleGetDomainPoolMapping(env) {
-    const mappingJson = await env.IP_DATA.get('domain_pool_mapping') || '{}';
+    const mappingJson = await requireKV(env).get('domain_pool_mapping') || '{}';
     const mapping = safeJSONParse(mappingJson, {});
     
-    const allKeys = await env.IP_DATA.list();
+    const allKeys = await requireKV(env).list();
     const pools = allKeys.keys
         .filter(k => k.name.startsWith('pool'))
         .map(k => k.name);
@@ -912,7 +936,7 @@ async function handleSaveDomainPoolMapping(request, env) {
     if (!body) {
         return badRequest({ success: false, error: '请求体不是有效JSON' });
     }
-    await env.IP_DATA.put('domain_pool_mapping', JSON.stringify(body.mapping));
+    await requireKV(env).put('domain_pool_mapping', JSON.stringify(body.mapping));
     return jsonResponse({ success: true });
 }
 
@@ -932,12 +956,12 @@ async function handleCreatePool(request, env) {
         return badRequest({ success: false, error: `池名称只能包含中文、字母、数字、下划线、横杠，最长${GLOBAL_SETTINGS.MAX_POOL_NAME_LENGTH}字符` });
     }
     
-    const existing = await env.IP_DATA.get(poolKey);
+    const existing = await requireKV(env).get(poolKey);
     if (existing !== null) {
         return badRequest({ success: false, error: '池已存在' });
     }
     
-    await env.IP_DATA.put(poolKey, '');
+    await requireKV(env).put(poolKey, '');
     return jsonResponse({ success: true });
 }
 
@@ -955,7 +979,7 @@ async function handleDeletePool(url, env) {
     }
     
     try {
-        await env.IP_DATA.delete(poolKey);
+        await requireKV(env).delete(poolKey);
         return jsonResponse({ success: true });
     } catch (e) {
         console.error('删除池失败:', e);
@@ -964,7 +988,7 @@ async function handleDeletePool(url, env) {
 }
 
 async function handleClearTrash(env) {
-    await env.IP_DATA.put('pool_trash', '');
+    await requireKV(env).put('pool_trash', '');
     return jsonResponse({ success: true, message: '垃圾桶已清空' });
 }
 
@@ -982,7 +1006,7 @@ async function handleRestoreFromTrash(request, env) {
     }
     
     // 获取垃圾桶
-    let trashList = parsePoolList(await env.IP_DATA.get('pool_trash'));
+    let trashList = parsePoolList(await requireKV(env).get('pool_trash'));
     
     let restored = 0;
     const restoredByPool = {};
@@ -991,7 +1015,7 @@ async function handleRestoreFromTrash(request, env) {
     const poolCache = new Map(); // poolKey -> { list: string[], set: Set<string> }
     async function loadPool(poolKey) {
         if (poolCache.has(poolKey)) return poolCache.get(poolKey);
-        const list = parsePoolList(await env.IP_DATA.get(poolKey));
+        const list = parsePoolList(await requireKV(env).get(poolKey));
         const set = new Set(list.map(p => extractIPKey(p)));
         const obj = { list, set };
         poolCache.set(poolKey, obj);
@@ -1039,9 +1063,9 @@ async function handleRestoreFromTrash(request, env) {
     }
 
     // 保存
-    await env.IP_DATA.put('pool_trash', Array.from(trashMap.values()).join('\n'));
+    await requireKV(env).put('pool_trash', Array.from(trashMap.values()).join('\n'));
     for (const [poolKey, poolObj] of poolCache.entries()) {
-        await env.IP_DATA.put(poolKey, poolObj.list.join('\n'));
+        await requireKV(env).put(poolKey, poolObj.list.join('\n'));
     }
     
     return jsonResponse({ 
@@ -1133,7 +1157,7 @@ function createConfig(env, request = null) {
 async function batchAddToTrash(env, entries) {
     if (!entries || entries.length === 0) return;
     const trashKey = 'pool_trash';
-    let trashList = parsePoolList(await env.IP_DATA.get(trashKey));
+    let trashList = parsePoolList(await requireKV(env).get(trashKey));
     const trashIPSet = new Set(trashList.map(t => extractIPKey(t)));
     const timestamp = new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
 
@@ -1149,7 +1173,7 @@ async function batchAddToTrash(env, entries) {
         trashList = trashList.slice(-GLOBAL_SETTINGS.MAX_TRASH_SIZE);
     }
 
-    await env.IP_DATA.put(trashKey, trashList.join('\n'));
+    await requireKV(env).put(trashKey, trashList.join('\n'));
 }
 
 function parseIPLine(line) {
@@ -1733,7 +1757,7 @@ async function fetchCF(config, path, method = 'GET', body = null) {
 }
 
 async function getCandidateIPs(env, target, addLog, poolKey) {
-    const pool = await env.IP_DATA.get(poolKey) || '';
+    const pool = await requireKV(env).get(poolKey) || '';
     
     if (!pool) {
         addLog(`⚠️ ${poolKey} 为空`);
@@ -1774,7 +1798,7 @@ async function maintainRecordsCommon(options) {
     } = options;
 
     const currentIPs = getCurrentIPs();
-    let poolList = parsePoolList(await env.IP_DATA.get(poolKey));
+    let poolList = parsePoolList(await requireKV(env).get(poolKey));
     report.poolKeyUsed = poolKey;
 
     let validIPs = [];
@@ -1856,7 +1880,7 @@ async function maintainRecordsCommon(options) {
     }
 
     if (poolModified) {
-        await env.IP_DATA.put(poolKey, poolList.join('\n'));
+        await requireKV(env).put(poolKey, poolList.join('\n'));
     }
 
     report.poolAfterCount = poolList.length;
@@ -2027,16 +2051,16 @@ async function savePoolText(env, poolKey, poolText, mode = 'replace') {
 
     if (mode === 'append') {
         const existing = new Map();
-        parsePoolList(await env.IP_DATA.get(poolKey) || '').forEach(line => {
+        parsePoolList(await requireKV(env).get(poolKey) || '').forEach(line => {
             const key = extractIPKey(line);
             if (key) existing.set(key, line);
         });
         incoming.forEach((line, key) => existing.set(key, line));
-        await env.IP_DATA.put(poolKey, Array.from(existing.values()).join('\n'));
+        await requireKV(env).put(poolKey, Array.from(existing.values()).join('\n'));
         return existing.size;
     }
 
-    await env.IP_DATA.put(poolKey, Array.from(incoming.values()).join('\n'));
+    await requireKV(env).put(poolKey, Array.from(incoming.values()).join('\n'));
     return incoming.size;
 }
 
@@ -2136,7 +2160,7 @@ async function autoUpdateCountryPools(env, config, onlyDomains = null) {
     if (!autoEnabled || sourceMap.size === 0) return { success: false, skipped: true, reason: 'not_enabled_or_no_sources' };
 
     const mode = String(env.REMOTE_UPDATE_MODE || 'replace').trim().toLowerCase() === 'append' ? 'append' : 'replace';
-    const mappingJson = await env.IP_DATA.get('domain_pool_mapping') || '{}';
+    const mappingJson = await requireKV(env).get('domain_pool_mapping') || '{}';
     const domainPoolMapping = safeJSONParse(mappingJson, {});
     const reports = [];
     const sourceCache = new Map();
@@ -2166,7 +2190,7 @@ async function autoUpdateCountryPools(env, config, onlyDomains = null) {
         console.log('🌐 远程IP池已更新: ' + domain + ' <= ' + (source.country || '-') + ', ' + poolKey + ', ' + count + '条, ' + source.url);
     }
 
-    await env.IP_DATA.put('domain_pool_mapping', JSON.stringify(domainPoolMapping, null, 2));
+    await requireKV(env).put('domain_pool_mapping', JSON.stringify(domainPoolMapping, null, 2));
     return { success: true, reports };
 }
 
@@ -2185,7 +2209,7 @@ async function ensureCountryDomainPoolMapping(env, config) {
     const sourceMap = parseRemoteDomainSources(env, config);
     if (sourceMap.size === 0) return { updated: false, mapping: {} };
 
-    const mappingJson = await env.IP_DATA.get('domain_pool_mapping') || '{}';
+    const mappingJson = await requireKV(env).get('domain_pool_mapping') || '{}';
     const domainPoolMapping = safeJSONParse(mappingJson, {});
     let changed = false;
 
@@ -2198,7 +2222,7 @@ async function ensureCountryDomainPoolMapping(env, config) {
     }
 
     if (changed) {
-        await env.IP_DATA.put('domain_pool_mapping', JSON.stringify(domainPoolMapping, null, 2));
+        await requireKV(env).put('domain_pool_mapping', JSON.stringify(domainPoolMapping, null, 2));
     }
 
     return { updated: changed, mapping: domainPoolMapping };
@@ -2237,7 +2261,7 @@ async function maintainAllDomains(env, isManual = false, config) {
 
     const poolStats = new Map();
     // 内联 loadDomainPoolMapping
-    const mappingJson = await env.IP_DATA.get('domain_pool_mapping') || '{}';
+    const mappingJson = await requireKV(env).get('domain_pool_mapping') || '{}';
     const domainPoolMapping = safeJSONParse(mappingJson, {});
 
     // 单次维护任务内缓存 proxyip 检测结果，减少重复外部请求（不改变结果，仅减少请求次数）
@@ -2256,10 +2280,10 @@ async function maintainAllDomains(env, isManual = false, config) {
         return res;
     };
 
-    const allKeys = await env.IP_DATA.list();
+    const allKeys = await requireKV(env).list();
     const poolSettled = await Promise.allSettled(
         allKeys.keys.filter(k => k.name.startsWith('pool')).map(async k => {
-            const raw = await env.IP_DATA.get(k.name) || '';
+            const raw = await requireKV(env).get(k.name) || '';
             return [k.name, parsePoolList(raw).length];
         })
     );
@@ -2357,7 +2381,7 @@ async function maintainAllDomains(env, isManual = false, config) {
 
     // 重新读取垃圾桶的实际数量（维护过程中 batchAddToTrash 直接写入 KV，不经过 report）
     if (poolStats.has('pool_trash')) {
-        const trashRaw = await env.IP_DATA.get('pool_trash') || '';
+        const trashRaw = await requireKV(env).get('pool_trash') || '';
         poolStats.get('pool_trash').after = parsePoolList(trashRaw).length;
     }
      
