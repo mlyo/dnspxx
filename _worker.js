@@ -444,7 +444,11 @@ export default {
             return await handleLogin(request, env);
         }
 
-        const isAdminPath = url.pathname === '/admin' || url.pathname.startsWith('/admin/');
+        if (url.pathname === '/admin') {
+            return redirect('/admin/');
+        }
+
+        const isAdminPath = url.pathname.startsWith('/admin/');
         const isApiPath = url.pathname.startsWith('/api/');
 
         const auth = await checkRequestAuth(request, url, env);
