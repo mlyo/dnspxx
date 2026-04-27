@@ -3202,80 +3202,118 @@ function renderHTML(C, runtimeState = {}) {
         }
 
 
-        /* ===== Stable mobile-first admin UI override ===== */
+        /* =====================================================================
+           方案 A：极简列表风 · 移动端优先落地版
+           只追加 CSS，不改前端 JS 模板字符串，避免 Worker 构建转义问题。
+        ===================================================================== */
         :root {
-            --primary: #2563eb;
-            --success: #16a34a;
-            --warning: #d97706;
-            --danger: #dc2626;
-            --bg: #f6f8fb;
-            --card: #ffffff;
-            --text: #0f172a;
-            --secondary: #64748b;
-            --line: #e2e8f0;
-            --line-soft: #eef2f7;
-            --field: #f8fafc;
-            --shadow: 0 6px 22px rgba(15, 23, 42, .06);
+            --a-primary: #2563eb;
+            --a-primary-weak: #dbeafe;
+            --a-success: #16a34a;
+            --a-success-weak: #dcfce7;
+            --a-danger: #dc2626;
+            --a-danger-weak: #fee2e2;
+            --a-text: #111827;
+            --a-muted: #64748b;
+            --a-line: #e5e7eb;
+            --a-line-soft: #f1f5f9;
+            --a-bg: #f8fafc;
+            --a-card: #ffffff;
+            --a-field: #f8fafc;
+            --a-shadow: 0 1px 2px rgba(15, 23, 42, .04), 0 8px 24px rgba(15, 23, 42, .04);
         }
-        html, body {
-            background: var(--bg) !important;
-            color: var(--text) !important;
-        }
+        html,
         body {
-            padding-bottom: calc(24px + env(safe-area-inset-bottom, 0px)) !important;
+            background: var(--a-bg) !important;
+            color: var(--a-text) !important;
+            overflow-x: hidden;
         }
+        body::before { display: none !important; }
         .container {
-            max-width: 1120px !important;
+            max-width: 1160px !important;
             padding-left: 16px !important;
             padding-right: 16px !important;
         }
+        .github-corner { opacity: .25; }
+        .github-corner svg { fill: #cbd5e1 !important; }
+
+        /* 顶部：去装饰化，保留上下文 */
         .hero {
-            padding: 22px 0 14px !important;
+            padding: 18px 0 12px !important;
         }
         .hero h1 {
             margin: 0 0 12px !important;
-            color: var(--text) !important;
-            font-size: clamp(1.35rem, 3.2vw, 1.95rem) !important;
-            font-weight: 800 !important;
-            letter-spacing: -.03em !important;
+            color: var(--a-text) !important;
+            font-size: 22px !important;
+            font-weight: 750 !important;
+            line-height: 1.25 !important;
+            letter-spacing: -.02em !important;
         }
         .hero-actions {
-            margin-bottom: 12px !important;
             gap: 8px !important;
-        }
-        .github-corner {
-            opacity: .18 !important;
-        }
-        .github-corner svg {
-            fill: #94a3b8 !important;
+            margin: 0 0 10px !important;
         }
         .guide-toggle,
+        .filter-help-btn {
+            width: 32px !important;
+            height: 32px !important;
+            min-width: 32px !important;
+            border-radius: 10px !important;
+            border: 1px solid var(--a-line) !important;
+            background: #fff !important;
+            color: var(--a-muted) !important;
+            box-shadow: none !important;
+        }
         .config-info,
         .usage-guide,
         .filter-help,
         .filter-preview,
-        .filter-help-btn,
         .custom-modal-stats {
             background: #fff !important;
-            border: 1px solid var(--line) !important;
-            color: var(--secondary) !important;
+            border: 1px solid var(--a-line) !important;
+            color: var(--a-muted) !important;
+            box-shadow: none !important;
+            backdrop-filter: none !important;
+        }
+        .usage-guide code,
+        .filter-help code {
+            background: #eff6ff !important;
+            color: #1d4ed8 !important;
+            border-radius: 6px;
+        }
+        .kv-alert {
+            border-color: #fecaca !important;
+            background: #fef2f2 !important;
+            color: #991b1b !important;
+        }
+        .domain-selector { max-width: none !important; }
+        .domain-selector select {
+            min-height: 44px !important;
+            padding: 10px 14px !important;
+            border-radius: 12px !important;
+            border: 1px solid var(--a-line) !important;
+            background-color: #fff !important;
+            color: var(--a-text) !important;
+            font-size: 15px !important;
+            font-weight: 700 !important;
             box-shadow: none !important;
         }
+
+        /* 卡片与控件统一 */
         .card,
-        .custom-modal,
         .config-mini-card,
-        .config-edit-panel {
-            background: var(--card) !important;
-            border: 1px solid var(--line) !important;
-            border-radius: 18px !important;
-            box-shadow: var(--shadow) !important;
+        .config-edit-panel,
+        .custom-modal {
+            background: var(--a-card) !important;
+            border: 1px solid var(--a-line) !important;
+            border-radius: 16px !important;
+            box-shadow: var(--a-shadow) !important;
+            backdrop-filter: none !important;
         }
         .card::before,
-        .custom-modal::before,
         .config-mini-card::before,
-        .config-edit-panel::before {
-            display: none !important;
-        }
+        .config-edit-panel::before,
+        .custom-modal::before { display: none !important; }
         h6,
         .field > span,
         .config-mini-card h5,
@@ -3283,7 +3321,7 @@ function renderHTML(C, runtimeState = {}) {
         .custom-modal-stats .value,
         .text-dark,
         .exit-ip {
-            color: var(--text) !important;
+            color: var(--a-text) !important;
         }
         .text-secondary,
         .field > small,
@@ -3291,89 +3329,63 @@ function renderHTML(C, runtimeState = {}) {
         .switch-row label,
         .custom-modal-content,
         .custom-modal-stats .label {
-            color: var(--secondary) !important;
+            color: var(--a-muted) !important;
         }
-        .top-nav {
-            display: grid !important;
-            grid-template-columns: repeat(2, minmax(0, 1fr));
-            gap: 6px !important;
-            padding: 5px;
-            background: #eef2f7;
-            border: 1px solid var(--line);
-            border-radius: 16px;
-            margin-bottom: 16px !important;
-        }
-        .nav-tab {
-            min-height: 40px !important;
-            border: 1px solid transparent !important;
-            border-radius: 12px !important;
-            background: transparent !important;
-            color: #475569 !important;
-            font-size: 14px !important;
-            font-weight: 800 !important;
-            padding: 8px 10px !important;
-        }
-        .nav-tab.active {
-            background: #fff !important;
-            color: var(--primary) !important;
-            border-color: #dbeafe !important;
-            box-shadow: 0 2px 8px rgba(15,23,42,.05) !important;
-        }
+        .bg-light { background: #f8fafc !important; }
         .form-control,
         .form-select,
         textarea.form-control {
-            background: var(--field) !important;
-            border: 1px solid var(--line) !important;
-            color: var(--text) !important;
-            border-radius: 12px !important;
-            box-shadow: none !important;
             min-height: 40px !important;
-            padding: 9px 11px !important;
+            padding: 9px 12px !important;
+            border-radius: 12px !important;
+            border: 1px solid var(--a-line) !important;
+            background: var(--a-field) !important;
+            color: var(--a-text) !important;
             font-size: 14px !important;
+            box-shadow: none !important;
         }
-        .form-control::placeholder {
-            color: #94a3b8 !important;
-        }
+        .form-control::placeholder { color: #94a3b8 !important; }
         .form-control:focus,
         .form-select:focus {
             background: #fff !important;
             border-color: #93c5fd !important;
             box-shadow: 0 0 0 3px rgba(37, 99, 235, .12) !important;
         }
-        #ip-input,
-        textarea.form-control {
+        textarea.form-control,
+        #ip-input {
+            min-height: 150px !important;
             line-height: 1.55 !important;
         }
         .btn,
         .custom-modal-buttons button {
-            min-height: 38px !important;
-            padding: 8px 12px !important;
+            min-height: 40px !important;
+            padding: 8px 14px !important;
             border-radius: 12px !important;
-            font-size: 13px !important;
-            font-weight: 750 !important;
+            font-size: 14px !important;
+            font-weight: 650 !important;
             line-height: 1.2 !important;
             box-shadow: none !important;
-            white-space: nowrap;
+            border: 1px solid transparent !important;
         }
         .btn:hover,
         .custom-modal-buttons button:hover {
             transform: none !important;
-            box-shadow: 0 3px 12px rgba(15, 23, 42, .08) !important;
+            box-shadow: 0 4px 14px rgba(15, 23, 42, .08) !important;
         }
         .btn-primary,
         .custom-modal-buttons .btn-continue {
-            background: var(--primary) !important;
-            border-color: var(--primary) !important;
+            background: var(--a-primary) !important;
+            border-color: var(--a-primary) !important;
             color: #fff !important;
         }
         .btn-success {
-            background: var(--success) !important;
-            border-color: var(--success) !important;
+            background: var(--a-success) !important;
+            border-color: var(--a-success) !important;
             color: #fff !important;
         }
         .btn-danger {
-            background: var(--danger) !important;
-            border-color: var(--danger) !important;
+            background: var(--a-danger) !important;
+            border-color: var(--a-danger) !important;
             color: #fff !important;
         }
         .btn-info {
@@ -3382,8 +3394,8 @@ function renderHTML(C, runtimeState = {}) {
             color: #fff !important;
         }
         .btn-dark {
-            background: #0f172a !important;
-            border-color: #0f172a !important;
+            background: #111827 !important;
+            border-color: #111827 !important;
             color: #fff !important;
         }
         .btn-outline-primary,
@@ -3392,104 +3404,182 @@ function renderHTML(C, runtimeState = {}) {
         .btn-outline-danger,
         .custom-modal-buttons .btn-abandon {
             background: #fff !important;
-            border: 1px solid var(--line) !important;
+            border: 1px solid var(--a-line) !important;
             color: #334155 !important;
         }
+        .btn-outline-primary { color: #2563eb !important; }
+        .btn-outline-success { color: #15803d !important; }
+        .btn-outline-danger { color: #dc2626 !important; }
+
+        /* 一级 Tab：分段切换 */
+        .top-nav {
+            display: grid !important;
+            grid-template-columns: 1fr 1fr !important;
+            gap: 4px !important;
+            padding: 4px !important;
+            margin-bottom: 14px !important;
+            background: #f1f5f9 !important;
+            border: 1px solid var(--a-line) !important;
+            border-radius: 14px !important;
+        }
+        .nav-tab {
+            min-height: 42px !important;
+            border: 0 !important;
+            border-radius: 11px !important;
+            background: transparent !important;
+            color: #475569 !important;
+            font-size: 15px !important;
+            font-weight: 750 !important;
+            box-shadow: none !important;
+        }
+        .nav-tab.active {
+            background: #fff !important;
+            color: var(--a-primary) !important;
+            box-shadow: 0 1px 2px rgba(15, 23, 42, .06) !important;
+        }
+
+        /* 桌面表格也轻量化 */
         .table-responsive,
         .scroll-box {
+            border: 1px solid var(--a-line) !important;
             background: #fff !important;
-            border: 1px solid var(--line) !important;
-            border-radius: 16px !important;
+            border-radius: 14px !important;
         }
-        .table {
-            font-size: 13px !important;
-        }
+        .table { margin-bottom: 0 !important; }
         .table th {
             background: #f8fafc !important;
-            color: #64748b !important;
-            border-bottom: 1px solid var(--line) !important;
+            color: var(--a-muted) !important;
+            border-bottom: 1px solid var(--a-line) !important;
             text-transform: none !important;
             font-size: 12px !important;
             padding: 11px 10px !important;
+            white-space: nowrap;
         }
         .table td {
-            color: var(--text) !important;
-            border-top: 1px solid var(--line-soft) !important;
+            color: var(--a-text) !important;
+            border-top: 1px solid var(--a-line-soft) !important;
             padding: 11px 10px !important;
+            vertical-align: middle !important;
         }
-        .badge,
         .status-badge,
         .latency-badge,
         .colo-badge,
+        .badge,
         .ip-info-tag {
             display: inline-flex !important;
             align-items: center !important;
             justify-content: center !important;
-            min-height: 24px !important;
+            min-height: 23px !important;
+            padding: 3px 8px !important;
             border-radius: 999px !important;
-            padding: 4px 8px !important;
-            font-size: 11px !important;
-            font-weight: 750 !important;
-            line-height: 1.15 !important;
+            font-size: 12px !important;
+            font-weight: 700 !important;
             white-space: nowrap !important;
-            margin: 0 4px 4px 0 !important;
         }
-        .latency-badge {
-            color: #1d4ed8 !important;
-            background: #dbeafe !important;
+        .latency-badge { color: #1d4ed8 !important; background: #dbeafe !important; }
+        .status-badge.ok { color: #166534 !important; background: #dcfce7 !important; }
+        .status-badge.bad { color: #991b1b !important; background: #fee2e2 !important; }
+        .colo-badge { color: #475569 !important; background: #e2e8f0 !important; }
+        .ip-info-tag { color: #0f766e !important; background: #ccfbf1 !important; }
+        .exit-stack { color: #6d28d9 !important; background: #ede9fe !important; }
+        .exit-list-cell {
+            min-width: 360px !important;
+            max-width: 660px !important;
+            overflow-x: auto;
         }
-        .status-badge.ok {
-            color: #166534 !important;
-            background: #dcfce7 !important;
+        .exit-detail {
+            display: flex !important;
+            align-items: center !important;
+            gap: 8px !important;
+            min-height: 28px !important;
+            width: max-content !important;
+            min-width: 100% !important;
+            padding: 2px 0 !important;
+            border-bottom: 0 !important;
         }
-        .status-badge.bad {
-            color: #991b1b !important;
-            background: #fee2e2 !important;
+        .exit-ip {
+            font-size: 12px !important;
+            font-weight: 650 !important;
+            white-space: nowrap !important;
         }
-        .colo-badge {
-            color: #475569 !important;
-            background: #e2e8f0 !important;
-        }
-        .exit-stack {
-            color: #6d28d9 !important;
-            background: #ede9fe !important;
-        }
-        .ip-info-tag:not(.exit-stack) {
-            color: #0f766e !important;
-            background: #ccfbf1 !important;
+        .exit-field {
+            max-width: 240px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
         }
         .console {
             background: #0f172a !important;
             color: #86efac !important;
-            border: none !important;
-            border-radius: 16px !important;
-            font-size: 12px !important;
+            border: 0 !important;
+            border-radius: 14px !important;
         }
-        .progress {
-            background: #e2e8f0 !important;
-        }
-        .progress-bar {
-            background: linear-gradient(90deg, #16a34a, #2563eb) !important;
-        }
-        .switch-slider {
-            background: #cbd5e1 !important;
-        }
-        .switch input:checked + .switch-slider {
-            background: var(--success) !important;
+        .progress { background: #e2e8f0 !important; border: 0 !important; }
+        .progress-bar { background: linear-gradient(90deg, #16a34a, #2563eb) !important; }
+        .switch-row label {
+            background: #fff !important;
+            border: 1px solid var(--a-line) !important;
+            border-radius: 12px !important;
+            padding: 10px 12px !important;
         }
 
-        /* desktop refinements */
+        /* 模块内固定区布局 */
+        #page-dashboard > .card.p-3 > .d-flex.justify-content-between.align-items-center.mb-3.flex-wrap.gap-2 {
+            display: grid !important;
+            grid-template-columns: auto minmax(0, 1fr) !important;
+            align-items: center !important;
+            gap: 12px !important;
+        }
         #page-dashboard > .card.p-3 > .d-flex.justify-content-between.align-items-center.mb-3.flex-wrap.gap-2 > .d-flex.gap-2.align-items-center.flex-grow-1 {
-            max-width: 560px !important;
+            display: grid !important;
+            grid-template-columns: minmax(0, 1fr) 72px 72px !important;
+            width: 100% !important;
+            max-width: none !important;
+            gap: 8px !important;
         }
-        .exit-list-cell {
-            min-width: 360px !important;
-            max-width: 600px !important;
+        #manual-add-section .input-group {
+            display: grid !important;
+            grid-template-columns: minmax(0, 1fr) 72px !important;
+            gap: 8px !important;
         }
-        .exit-detail {
-            grid-template-columns: 48px minmax(180px, max-content) minmax(90px, .7fr) minmax(120px, 1fr) !important;
+        #manual-add-section .btn { width: 72px !important; }
+        .col-lg-7 > .card.p-4:first-child > .d-flex.justify-content-between.align-items-center.mb-3.flex-wrap.gap-2 {
+            display: grid !important;
+            grid-template-columns: minmax(0, 1fr) auto !important;
+            gap: 12px !important;
         }
+        .col-lg-7 > .card.p-4:first-child > .d-flex.justify-content-between.align-items-center.mb-3.flex-wrap.gap-2 > .d-flex.gap-1.align-items-center {
+            display: grid !important;
+            grid-template-columns: 136px repeat(3, 38px) !important;
+            gap: 6px !important;
+        }
+        .col-lg-7 > .card.p-4:first-child > .d-flex.justify-content-between.align-items-center.mb-3.flex-wrap.gap-2 > .d-flex.gap-1.align-items-center .btn {
+            min-height: 38px !important;
+            padding: 0 !important;
+        }
+        .ip-content-area > .d-flex.gap-2.mb-2.align-items-center {
+            display: grid !important;
+            grid-template-columns: minmax(0, 1fr) auto auto auto !important;
+            gap: 8px !important;
+        }
+        .filter-toolbar {
+            display: grid !important;
+            gap: 8px !important;
+        }
+        .filter-line {
+            display: grid !important;
+            grid-template-columns: minmax(0, 1fr) 36px auto auto auto !important;
+            gap: 8px !important;
+            align-items: center !important;
+        }
+        #main-actions {
+            display: grid !important;
+            grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto !important;
+            gap: 8px !important;
+        }
+        #main-actions .btn { width: 100% !important; }
 
+        /* ========================= 手机端：方案 A 极简列表 ========================= */
         @media (max-width: 768px) {
             .container {
                 padding-left: 12px !important;
@@ -3499,126 +3589,70 @@ function renderHTML(C, runtimeState = {}) {
                 padding: 14px 0 10px !important;
             }
             .hero h1 {
-                font-size: 1.32rem !important;
-                line-height: 1.25 !important;
+                font-size: 20px !important;
                 margin-bottom: 10px !important;
             }
             .hero-actions {
-                display: grid !important;
-                grid-template-columns: 38px minmax(0, 1fr);
-                align-items: start !important;
+                align-items: flex-start !important;
             }
-            .guide-toggle {
-                width: 38px !important;
-                height: 38px !important;
-            }
-            .config-info,
-            .usage-guide {
+            .config-info {
+                flex: 1 1 100% !important;
                 font-size: 12px !important;
-                line-height: 1.45 !important;
-                padding: 9px 10px !important;
+                padding: 8px 10px !important;
             }
             .domain-selector select {
-                min-height: 42px !important;
-                padding: 9px 34px 9px 12px !important;
-                font-size: 13px !important;
-                font-weight: 750 !important;
-            }
-            .github-corner {
-                display: none !important;
+                min-height: 44px !important;
+                font-size: 15px !important;
             }
             .top-nav {
-                position: sticky;
-                top: 0;
-                z-index: 20;
-                margin: 0 0 12px !important;
-                border-radius: 14px !important;
+                margin-bottom: 12px !important;
             }
             .nav-tab {
-                min-height: 36px !important;
-                font-size: 13px !important;
-                padding: 7px 8px !important;
-            }
-            .card {
-                border-radius: 16px !important;
-                margin-bottom: 14px !important;
+                min-height: 40px !important;
+                font-size: 15px !important;
             }
             .card.p-3,
             .card.p-4 {
-                padding: 12px !important;
+                padding: 14px !important;
+                border-radius: 16px !important;
             }
-            h6 {
-                font-size: 1rem !important;
-            }
-            .btn,
-            .custom-modal-buttons button {
-                min-height: 34px !important;
-                padding: 7px 10px !important;
-                font-size: 12px !important;
-                border-radius: 10px !important;
-            }
-            .form-control,
-            .form-select,
-            textarea.form-control {
-                min-height: 36px !important;
+            .btn {
+                min-height: 38px !important;
                 padding: 8px 10px !important;
                 font-size: 13px !important;
                 border-radius: 11px !important;
             }
-
-            /* query area: never collapse */
+            .form-control,
+            .form-select,
+            textarea.form-control {
+                min-height: 38px !important;
+                padding: 8px 10px !important;
+                font-size: 13px !important;
+            }
             #page-dashboard > .card.p-3 > .d-flex.justify-content-between.align-items-center.mb-3.flex-wrap.gap-2 {
-                display: grid !important;
                 grid-template-columns: 1fr !important;
                 gap: 10px !important;
-                align-items: stretch !important;
             }
             #page-dashboard > .card.p-3 > .d-flex.justify-content-between.align-items-center.mb-3.flex-wrap.gap-2 > .d-flex.gap-2.align-items-center.flex-grow-1 {
-                display: grid !important;
-                grid-template-columns: minmax(0, 1fr) 58px 58px !important;
-                gap: 8px !important;
-                max-width: none !important;
-                width: 100% !important;
-            }
-            #lookup-domain {
-                min-width: 0 !important;
-            }
-            #manual-add-section {
-                width: 100% !important;
-                margin-bottom: 10px !important;
+                grid-template-columns: minmax(0, 1fr) 62px 62px !important;
             }
             #manual-add-section .input-group {
-                display: grid !important;
-                grid-template-columns: minmax(0, 1fr) 64px !important;
-                gap: 8px !important;
-                width: 100% !important;
-                align-items: stretch !important;
+                grid-template-columns: minmax(0, 1fr) 62px !important;
             }
-            #manual-add-section .input-group > * {
-                width: 100% !important;
-                min-width: 0 !important;
-                border-radius: 11px !important;
-            }
-            #manual-add-ip {
-                display: block !important;
-                min-width: 0 !important;
-                height: 36px !important;
-            }
-            #manual-add-section .btn {
-                padding-left: 0 !important;
-                padding-right: 0 !important;
-            }
+            #manual-add-section .btn { width: 62px !important; }
 
-            /* status cards */
+            /* 状态列表：不横向滚动，不大卡片，每个 IP 两行 */
             #status-display {
                 max-height: none !important;
                 overflow: visible !important;
-                border: 0 !important;
-                background: transparent !important;
+                border: 1px solid var(--a-line) !important;
+                border-radius: 14px !important;
+                background: #fff !important;
             }
-            #status-display .table-responsive {
+            #status-display > .table-responsive {
                 overflow: visible !important;
                 border: 0 !important;
+                border-radius: 14px !important;
                 background: transparent !important;
             }
             .status-table,
@@ -3628,72 +3662,78 @@ function renderHTML(C, runtimeState = {}) {
                 display: block !important;
                 width: 100% !important;
             }
-            .status-table thead {
-                display: none !important;
-            }
-            .status-table tbody {
-                padding: 0 !important;
-            }
+            .status-table thead { display: none !important; }
+            .status-table tbody { margin: 0 !important; padding: 0 !important; }
             .status-table tr {
-                margin: 0 0 10px !important;
-                border: 1px solid var(--line) !important;
-                border-radius: 14px !important;
+                position: relative !important;
+                display: grid !important;
+                grid-template-columns: minmax(0, 1fr) auto auto auto 30px !important;
+                grid-template-areas:
+                    "addr latency status colo action"
+                    "detail detail detail detail detail" !important;
+                align-items: center !important;
+                column-gap: 8px !important;
+                row-gap: 6px !important;
+                padding: 10px 8px 10px 12px !important;
+                border-bottom: 1px solid var(--a-line-soft) !important;
                 background: #fff !important;
-                box-shadow: 0 2px 8px rgba(15, 23, 42, .035) !important;
-                overflow: hidden !important;
             }
+            .status-table tr:last-child { border-bottom: 0 !important; }
             .status-table td {
-                border-top: 1px solid var(--line-soft) !important;
-                padding: 10px 12px !important;
+                padding: 0 !important;
+                border: 0 !important;
                 white-space: normal !important;
                 text-align: left !important;
+                min-width: 0 !important;
             }
-            .status-table td:first-child {
-                border-top: 0 !important;
-                background: #f8fafc !important;
-                font-size: 14px !important;
-                font-weight: 800 !important;
-                word-break: break-all !important;
+            .status-table td:nth-child(1) {
+                grid-area: addr !important;
+                font-size: 15px !important;
+                font-weight: 750 !important;
+                line-height: 1.25 !important;
+                overflow: hidden !important;
+                text-overflow: ellipsis !important;
+                white-space: nowrap !important;
             }
-            .status-table td:nth-child(n+2) {
-                display: grid !important;
-                grid-template-columns: 72px minmax(0, 1fr) !important;
-                gap: 8px !important;
+            .status-table td:nth-child(2) { grid-area: latency !important; }
+            .status-table td:nth-child(3) { grid-area: status !important; }
+            .status-table td:nth-child(5) { grid-area: colo !important; }
+            .status-table td:nth-child(6) {
+                grid-area: action !important;
+                text-align: right !important;
+            }
+            .status-table td:nth-child(6) a,
+            .status-table td:nth-child(6) button {
+                display: inline-flex !important;
                 align-items: center !important;
-            }
-            .status-table td:nth-child(2)::before { content: '延迟'; }
-            .status-table td:nth-child(3)::before { content: '状态'; }
-            .status-table td:nth-child(4)::before { content: '出口信息'; }
-            .status-table td:nth-child(5)::before { content: 'Colo'; }
-            .status-table td:nth-child(6)::before { content: '操作'; }
-            .status-table td:nth-child(n+2)::before {
-                color: var(--secondary);
-                font-size: 12px;
-                font-weight: 800;
-                line-height: 1.2;
-            }
-            .status-table .latency-badge,
-            .status-table .status-badge,
-            .status-table .colo-badge {
-                width: fit-content !important;
-                min-width: 74px !important;
-                justify-self: start !important;
-                margin: 0 !important;
+                justify-content: center !important;
+                width: 28px !important;
+                height: 28px !important;
+                min-width: 28px !important;
+                min-height: 28px !important;
+                padding: 0 !important;
+                border-radius: 8px !important;
+                font-size: 13px !important;
             }
             .status-table td:nth-child(4) {
-                display: block !important;
-            }
-            .status-table td:nth-child(4)::before {
-                display: block !important;
-                margin-bottom: 8px !important;
-            }
-            .exit-list-cell {
+                grid-area: detail !important;
+                margin-left: 0 !important;
+                padding-top: 2px !important;
                 min-width: 0 !important;
                 max-width: none !important;
                 width: 100% !important;
                 overflow: visible !important;
-                background: transparent !important;
                 border: 0 !important;
+                background: transparent !important;
+            }
+            .status-table .latency-badge,
+            .status-table .status-badge,
+            .status-table .colo-badge,
+            .status-table .ip-info-tag {
+                min-height: 22px !important;
+                padding: 2px 8px !important;
+                font-size: 11px !important;
+                line-height: 18px !important;
             }
             .exit-detail {
                 display: flex !important;
@@ -3702,219 +3742,111 @@ function renderHTML(C, runtimeState = {}) {
                 gap: 6px !important;
                 width: 100% !important;
                 min-width: 0 !important;
-                margin: 0 0 6px !important;
-                padding: 0 0 6px !important;
-                border-bottom: 1px solid var(--line-soft) !important;
-            }
-            .exit-detail:last-child {
-                margin-bottom: 0 !important;
-                padding-bottom: 0 !important;
-                border-bottom: 0 !important;
-            }
-            .exit-stack {
-                min-width: auto !important;
-                writing-mode: horizontal-tb !important;
-                letter-spacing: normal !important;
+                padding: 0 !important;
+                margin: 0 !important;
             }
             .exit-ip {
                 font-size: 13px !important;
+                font-weight: 650 !important;
+                line-height: 22px !important;
                 white-space: nowrap !important;
                 overflow: hidden !important;
                 text-overflow: ellipsis !important;
-                max-width: 100% !important;
-                flex: 0 1 auto !important;
+                max-width: 150px !important;
             }
             .exit-field {
-                white-space: normal !important;
-                overflow: visible !important;
-                text-overflow: clip !important;
                 max-width: 100% !important;
-                word-break: break-word !important;
-            }
-            .status-table td:nth-child(6) a,
-            .status-table td:nth-child(6) button {
-                min-width: 54px !important;
             }
 
-            /* IP library */
+            /* IP 库管理移动端收口 */
             .col-lg-7 > .card.p-4:first-child > .d-flex.justify-content-between.align-items-center.mb-3.flex-wrap.gap-2 {
-                display: grid !important;
                 grid-template-columns: 1fr !important;
-                gap: 10px !important;
-                align-items: stretch !important;
             }
             .col-lg-7 > .card.p-4:first-child > .d-flex.justify-content-between.align-items-center.mb-3.flex-wrap.gap-2 > .d-flex.gap-1.align-items-center {
-                display: grid !important;
                 grid-template-columns: minmax(0, 1fr) 36px 36px 36px !important;
-                gap: 6px !important;
                 width: 100% !important;
             }
-            #pool-selector {
-                width: 100% !important;
-                min-width: 0 !important;
-            }
+            #pool-selector { width: 100% !important; }
             .ip-content-area > .d-flex.gap-2.mb-2.align-items-center {
-                display: grid !important;
                 grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
-                gap: 8px !important;
-                align-items: stretch !important;
             }
-            #remote-url {
+            .ip-content-area > .d-flex.gap-2.mb-2.align-items-center > #remote-url {
                 grid-column: 1 / -1 !important;
-                min-width: 0 !important;
             }
             #ip-input {
-                min-height: 132px !important;
-                font-size: 12px !important;
-            }
-            .filter-toolbar,
-            .filter-line {
-                display: grid !important;
-                gap: 8px !important;
-                width: 100% !important;
+                min-height: 140px !important;
+                font-size: 13px !important;
             }
             .filter-line {
-                grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+                grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
             }
-            #universal-filter {
+            .filter-line > #universal-filter {
                 grid-column: 1 / -1 !important;
-                min-width: 0 !important;
             }
-            .filter-help-btn {
+            .filter-line > .filter-help-btn {
                 width: 36px !important;
-                min-height: 34px !important;
                 justify-self: start !important;
             }
-            .filter-line .btn {
-                width: 100% !important;
-            }
-            .pool-stat {
-                display: inline-flex !important;
-                align-items: center !important;
-                gap: 4px !important;
-                width: fit-content !important;
-                padding: 4px 8px !important;
-                border: 1px solid var(--line) !important;
-                border-radius: 999px !important;
-                background: #fff !important;
-                font-size: 12px !important;
-            }
+            .filter-line > .btn { width: 100% !important; }
             #main-actions {
-                display: grid !important;
                 grid-template-columns: 1fr 1fr !important;
-                gap: 8px !important;
-            }
-            #main-actions .btn {
-                width: 100% !important;
             }
             #main-actions .btn:last-child {
                 grid-column: 1 / -1 !important;
             }
 
-            /* domain binding table becomes full-width cards */
-            table:has(#domain-binding-list) {
-                display: block !important;
-                width: 100% !important;
-            }
-            table:has(#domain-binding-list) thead {
-                display: none !important;
-            }
-            table:has(#domain-binding-list) .table-responsive,
-            .card .table-responsive:has(#domain-binding-list) {
-                overflow: visible !important;
-                border: 0 !important;
-                background: transparent !important;
-            }
-            #domain-binding-list {
-                display: block !important;
-                width: 100% !important;
-            }
+            /* 域名池绑定：一行一个条目 */
+            #domain-binding-list,
             #domain-binding-list tr,
             #domain-binding-list td {
                 display: block !important;
                 width: 100% !important;
             }
             #domain-binding-list tr {
-                margin: 0 0 10px !important;
-                border: 1px solid var(--line) !important;
-                border-radius: 14px !important;
-                background: #fff !important;
-                overflow: hidden !important;
+                display: grid !important;
+                grid-template-columns: minmax(0, 1fr) minmax(116px, 42%) !important;
+                gap: 10px !important;
+                align-items: center !important;
+                min-height: 56px !important;
+                padding: 8px 10px !important;
+                border-top: 1px solid var(--a-line-soft) !important;
             }
+            #domain-binding-list tr:first-child { border-top: 0 !important; }
             #domain-binding-list td {
-                border-top: 1px solid var(--line-soft) !important;
-                padding: 10px 12px !important;
+                border: 0 !important;
+                padding: 0 !important;
+                min-width: 0 !important;
                 text-align: left !important;
-            }
-            #domain-binding-list td:first-child {
-                border-top: 0 !important;
-                background: #f8fafc !important;
-            }
-            #domain-binding-list td:nth-child(1)::before { content: '域名'; }
-            #domain-binding-list td:nth-child(2)::before { content: '绑定池'; }
-            #domain-binding-list td::before {
-                display: block !important;
-                margin-bottom: 6px !important;
-                color: var(--secondary) !important;
-                font-size: 12px !important;
-                font-weight: 800 !important;
             }
             #domain-binding-list code {
                 display: block !important;
-                white-space: normal !important;
-                word-break: break-all !important;
-                color: var(--text) !important;
                 background: transparent !important;
                 padding: 0 !important;
-                font-size: 13px !important;
-                line-height: 1.4 !important;
+                color: var(--a-text) !important;
+                font-size: 14px !important;
+                font-weight: 650 !important;
+                white-space: nowrap !important;
+                overflow: hidden !important;
+                text-overflow: ellipsis !important;
             }
             #domain-binding-list select {
                 width: 100% !important;
-                min-width: 0 !important;
+                min-height: 36px !important;
+                font-size: 13px !important;
             }
 
-            /* console and config */
-            .console,
-            .col-lg-5 > .card.p-4 .console {
+            .console {
                 height: 220px !important;
-                max-height: 220px !important;
-                padding: 12px !important;
                 font-size: 11px !important;
-                line-height: 1.55 !important;
+                padding: 12px !important;
             }
             .config-grid,
             .config-edit-grid,
             .config-card-grid {
                 grid-template-columns: 1fr !important;
             }
-            .config-grid .span-2 {
-                grid-column: auto !important;
-            }
-            .switch-row {
-                display: grid !important;
-                grid-template-columns: 1fr !important;
-                gap: 8px !important;
-            }
-            .switch-row label {
-                justify-content: space-between !important;
-                background: #fff !important;
-                border: 1px solid var(--line) !important;
-                border-radius: 12px !important;
-                padding: 10px !important;
-            }
-            .config-mini-card .actions,
-            .config-edit-actions,
-            .custom-modal-buttons {
-                display: grid !important;
-                grid-template-columns: 1fr 1fr !important;
-                gap: 8px !important;
-            }
-            .config-mini-card .actions .btn,
-            .config-edit-actions .btn,
-            .custom-modal-buttons button {
-                width: 100% !important;
-            }
+            .config-grid .span-2 { grid-column: auto !important; }
+            .switch-row { grid-template-columns: 1fr !important; }
             .toast {
                 left: 12px !important;
                 right: 12px !important;
@@ -3923,268 +3855,40 @@ function renderHTML(C, runtimeState = {}) {
             }
         }
 
-        @media (max-width: 420px) {
+        @media (max-width: 430px) {
             .container {
                 padding-left: 10px !important;
                 padding-right: 10px !important;
             }
-            .hero h1 {
-                font-size: 1.22rem !important;
-            }
+            .hero h1 { font-size: 19px !important; }
             .card.p-3,
-            .card.p-4 {
-                padding: 10px !important;
-            }
+            .card.p-4 { padding: 12px !important; }
             #page-dashboard > .card.p-3 > .d-flex.justify-content-between.align-items-center.mb-3.flex-wrap.gap-2 > .d-flex.gap-2.align-items-center.flex-grow-1 {
-                grid-template-columns: minmax(0, 1fr) 54px 54px !important;
+                grid-template-columns: minmax(0, 1fr) 56px 56px !important;
             }
             #manual-add-section .input-group {
-                grid-template-columns: minmax(0, 1fr) 58px !important;
+                grid-template-columns: minmax(0, 1fr) 56px !important;
             }
-            .status-table td:nth-child(n+2) {
-                grid-template-columns: 66px minmax(0, 1fr) !important;
-            }
-            .ip-content-area > .d-flex.gap-2.mb-2.align-items-center {
-                grid-template-columns: 1fr !important;
-            }
-            .filter-line {
-                grid-template-columns: 1fr 1fr !important;
-            }
-        }
-
-
-
-        /* ===== 移动端紧凑行版修复：IP 一行 + 缩进详情 ===== */
-        @media (max-width: 768px) {
-            /* 解析实况：每个 IP 先以一行呈现，出口信息缩进到下一行 */
-            #status-display,
-            #status-display .table-responsive {
-                max-height: none !important;
-                overflow: visible !important;
-                border: 0 !important;
-                background: transparent !important;
-            }
-            .status-table,
-            .status-table tbody {
-                display: block !important;
-                width: 100% !important;
-            }
-            .status-table thead { display: none !important; }
-            .status-table tbody { padding: 0 !important; }
+            #manual-add-section .btn { width: 56px !important; }
             .status-table tr {
-                display: grid !important;
-                width: 100% !important;
-                grid-template-columns: minmax(0, 1fr) auto auto auto auto !important;
-                grid-template-areas:
-                    "ip latency state colo action"
-                    "exit exit exit exit exit" !important;
-                align-items: center !important;
+                grid-template-columns: minmax(0, 1fr) auto auto auto 28px !important;
                 column-gap: 6px !important;
-                row-gap: 0 !important;
-                margin: 0 0 8px !important;
-                padding: 10px 10px 9px !important;
-                border: 1px solid var(--line) !important;
-                border-radius: 14px !important;
-                background: #fff !important;
-                box-shadow: 0 2px 8px rgba(15, 23, 42, .035) !important;
-                overflow: hidden !important;
+                padding: 10px 7px 10px 10px !important;
             }
-            .status-table td {
-                display: flex !important;
-                align-items: center !important;
-                width: auto !important;
-                min-width: 0 !important;
-                padding: 0 !important;
-                border: 0 !important;
-                background: transparent !important;
-                text-align: left !important;
-                white-space: normal !important;
-            }
-            .status-table td::before { content: none !important; display: none !important; }
             .status-table td:nth-child(1) {
-                grid-area: ip !important;
                 font-size: 14px !important;
-                font-weight: 800 !important;
-                line-height: 1.25 !important;
-                white-space: nowrap !important;
-                overflow: hidden !important;
-                text-overflow: ellipsis !important;
-                color: var(--text) !important;
-            }
-            .status-table td:nth-child(2) { grid-area: latency !important; }
-            .status-table td:nth-child(3) { grid-area: state !important; }
-            .status-table td:nth-child(5) { grid-area: colo !important; }
-            .status-table td:nth-child(6) {
-                grid-area: action !important;
-                justify-content: flex-end !important;
-            }
-            .status-table td:nth-child(4) {
-                grid-area: exit !important;
-                display: block !important;
-                width: 100% !important;
-                margin-top: 8px !important;
-                padding: 8px 0 0 14px !important;
-                border-top: 1px solid var(--line-soft) !important;
             }
             .status-table .latency-badge,
             .status-table .status-badge,
-            .status-table .colo-badge {
-                width: auto !important;
-                min-width: 0 !important;
-                min-height: 22px !important;
-                padding: 3px 8px !important;
-                font-size: 10px !important;
-                line-height: 1.2 !important;
-                margin: 0 !important;
-                white-space: nowrap !important;
-            }
-            .status-table td:nth-child(6) a,
-            .status-table td:nth-child(6) button {
-                min-width: 0 !important;
-                min-height: 22px !important;
+            .status-table .colo-badge,
+            .status-table .ip-info-tag {
                 padding: 2px 6px !important;
-                font-size: 12px !important;
-                line-height: 1.2 !important;
-            }
-            .exit-list-cell {
-                min-width: 0 !important;
-                max-width: none !important;
-                overflow: visible !important;
-                background: transparent !important;
-                border: 0 !important;
-            }
-            .exit-detail {
-                display: flex !important;
-                flex-direction: row !important;
-                flex-wrap: wrap !important;
-                align-items: center !important;
-                width: 100% !important;
-                min-width: 0 !important;
-                gap: 5px !important;
-                margin: 0 0 5px !important;
-                padding: 0 !important;
-                border: 0 !important;
-            }
-            .exit-detail:last-child { margin-bottom: 0 !important; }
-            .exit-stack {
-                min-width: 0 !important;
-                writing-mode: horizontal-tb !important;
-                letter-spacing: normal !important;
-                white-space: nowrap !important;
-            }
-            .exit-ip {
-                flex: 0 1 auto !important;
-                min-width: 0 !important;
-                max-width: 140px !important;
-                font-size: 12px !important;
-                line-height: 1.25 !important;
-                white-space: nowrap !important;
-                overflow: hidden !important;
-                text-overflow: ellipsis !important;
-            }
-            .exit-field {
-                flex: 0 1 auto !important;
-                min-width: 0 !important;
-                max-width: 100% !important;
-                white-space: nowrap !important;
-                overflow: hidden !important;
-                text-overflow: ellipsis !important;
-            }
-            .ip-info-tag,
-            .exit-stack,
-            .exit-field {
-                min-height: 22px !important;
-                padding: 3px 7px !important;
                 font-size: 10px !important;
-                line-height: 1.2 !important;
-            }
-
-            /* 手动添加：恢复一行，不再掉成竖条 */
-            #manual-add-section .input-group {
-                display: grid !important;
-                grid-template-columns: minmax(0, 1fr) 64px !important;
-                gap: 8px !important;
-                width: 100% !important;
-            }
-            #manual-add-ip {
-                width: 100% !important;
-                min-width: 0 !important;
-            }
-
-            /* 域名池绑定：改成一行紧凑卡片，域名左、池右 */
-            #page-dashboard .card:nth-of-type(3) .table-responsive {
-                overflow: visible !important;
-                border: 0 !important;
-                background: transparent !important;
-            }
-            #domain-binding-list {
-                display: block !important;
-                width: 100% !important;
-            }
-            #domain-binding-list tr {
-                display: grid !important;
-                grid-template-columns: minmax(0, 1fr) minmax(130px, 42%) !important;
-                align-items: center !important;
-                gap: 10px !important;
-                width: 100% !important;
-                margin: 0 0 8px !important;
-                padding: 10px !important;
-                border: 1px solid var(--line) !important;
-                border-radius: 14px !important;
-                background: #fff !important;
-                box-shadow: 0 2px 8px rgba(15, 23, 42, .035) !important;
-            }
-            #domain-binding-list td {
-                display: block !important;
-                width: 100% !important;
-                min-width: 0 !important;
-                padding: 0 !important;
-                border: 0 !important;
-                background: transparent !important;
-            }
-            #domain-binding-list td::before { display: none !important; content: none !important; }
-            #domain-binding-list code {
-                display: block !important;
-                width: 100% !important;
-                white-space: nowrap !important;
-                overflow: hidden !important;
-                text-overflow: ellipsis !important;
-                font-size: 13px !important;
-                line-height: 1.2 !important;
-                background: transparent !important;
-                padding: 0 !important;
-            }
-            #domain-binding-list .form-select {
-                width: 100% !important;
-                min-width: 0 !important;
-                height: 34px !important;
-                min-height: 34px !important;
-                padding: 6px 28px 6px 9px !important;
-                font-size: 12px !important;
-            }
-        }
-        @media (max-width: 420px) {
-            .status-table tr {
-                grid-template-columns: minmax(0, 1fr) auto auto auto !important;
-                grid-template-areas:
-                    "ip ip ip action"
-                    "latency state colo action"
-                    "exit exit exit exit" !important;
-                row-gap: 7px !important;
-            }
-            .status-table td:nth-child(1) {
-                max-width: none !important;
-            }
-            .status-table td:nth-child(6) {
-                align-self: start !important;
-            }
-            .status-table td:nth-child(4) {
-                margin-top: 2px !important;
-                padding-left: 12px !important;
             }
             .exit-ip { max-width: 128px !important; }
             #domain-binding-list tr {
-                grid-template-columns: minmax(0, 1fr) minmax(118px, 40%) !important;
+                grid-template-columns: minmax(0, 1fr) 118px !important;
+                gap: 8px !important;
             }
         }
 
@@ -4242,15 +3946,15 @@ function renderHTML(C, runtimeState = {}) {
             <h6 class="m-0 fw-bold">📡 解析实况</h6>
             <div class="d-flex gap-2 align-items-center flex-grow-1" style="max-width:500px">
                 <input type="text" id="lookup-domain" class="form-control form-control-sm" placeholder="探测: 域名 / IP:端口 / txt@域名" style="border-radius:8px">
-                <button class="btn btn-info btn-sm text-white" onclick="lookupDomain()" title="探测任意域名或IP" style="white-space:nowrap">🔎</button>
-                <button class="btn btn-primary btn-sm" onclick="refreshStatus()" title="刷新当前域名解析">🔄</button>
+                <button class="btn btn-info btn-sm text-white" onclick="lookupDomain()" title="探测任意域名或IP" style="white-space:nowrap">查询</button>
+                <button class="btn btn-primary btn-sm" onclick="refreshStatus()" title="刷新当前域名解析">刷新</button>
             </div>
         </div>
         
         <div id="manual-add-section" class="mb-2">
             <div class="input-group input-group-sm">
                 <input type="text" id="manual-add-ip" class="form-control" placeholder="手动添加IP到当前域名 (如: 1.2.3.4:443)">
-                <button class="btn btn-success" onclick="manualAddIP()" title="添加IP到当前域名">➕</button>
+                <button class="btn btn-success" onclick="manualAddIP()" title="添加IP到当前域名">添加</button>
             </div>
         </div>
         
@@ -4286,7 +3990,7 @@ function renderHTML(C, runtimeState = {}) {
                         <select id="pool-selector" class="form-select form-select-sm" style="width:120px;border-radius:8px" onchange="switchPool()">
                             <option value="pool">通用池</option>
                         </select>
-                        <button class="btn btn-sm" onclick="createNewPool()" title="新建池" style="padding:6px 8px">➕</button>
+                        <button class="btn btn-sm" onclick="createNewPool()" title="新建池" style="padding:6px 8px">添加</button>
                         <button class="btn btn-sm" onclick="deleteCurrentPool()" title="删除池" style="padding:6px 8px">🗑️</button>
                         <button class="btn btn-sm" onclick="oneClickClean()" title="一键洗库" style="padding:6px 8px">🧹</button>
                     </div>
@@ -4297,9 +4001,9 @@ function renderHTML(C, runtimeState = {}) {
                     <!-- 加载区 -->
                     <div class="d-flex gap-2 mb-2 align-items-center">
                         <input type="text" id="remote-url" class="form-control form-control-sm flex-grow-1" placeholder="远程TXT URL" style="border-radius:8px">
-                        <button class="btn btn-sm btn-outline-primary" onclick="loadRemoteUrl()" style="white-space:nowrap" title="从远程URL加载">🌐 加载</button>
-                        <button class="btn btn-sm btn-outline-secondary" onclick="loadCurrentPool()" title="加载当前池到输入框" style="white-space:nowrap">📂 从库</button>
-                        <button class="btn btn-sm btn-outline-danger" onclick="clearInput()" title="清空输入框" style="white-space:nowrap">🗑️ 清空</button>
+                        <button class="btn btn-sm btn-outline-primary" onclick="loadRemoteUrl()" style="white-space:nowrap" title="从远程URL加载">加载</button>
+                        <button class="btn btn-sm btn-outline-secondary" onclick="loadCurrentPool()" title="加载当前池到输入框" style="white-space:nowrap">从库</button>
+                        <button class="btn btn-sm btn-outline-danger" onclick="clearInput()" title="清空输入框" style="white-space:nowrap">清空</button>
                     </div>
                     
                     <!-- 输入区 -->
@@ -4326,8 +4030,8 @@ function renderHTML(C, runtimeState = {}) {
                 <div class="ip-actions-area mt-auto">
                     <!-- 主操作按钮 -->
                     <div class="d-flex gap-2" id="main-actions">
-                        <button id="btn-check" class="btn btn-primary flex-grow-1" onclick="batchCheck()" style="border-radius:10px">⚡ 检测</button>
-                        <button class="btn btn-success flex-grow-1" onclick="saveToCurrentPool('append')" style="border-radius:10px">💾 入库</button>
+                        <button id="btn-check" class="btn btn-primary flex-grow-1" onclick="batchCheck()" style="border-radius:10px">检测清洗</button>
+                        <button class="btn btn-success flex-grow-1" onclick="saveToCurrentPool('append')" style="border-radius:10px">保存入库</button>
                         <button class="btn btn-outline-secondary btn-sm" onclick="removeFromPool()" title="从库中移除输入框中的IP" style="border-radius:8px">从库中移除</button>
                     </div>
                     
@@ -4349,7 +4053,7 @@ function renderHTML(C, runtimeState = {}) {
             <div class="card p-4 mb-3">
                 <div class="d-flex justify-content-between align-items-center mb-3">
                     <h6 class="m-0 fw-bold">🔗 域名池绑定</h6>
-                    <button class="btn btn-sm btn-outline-primary" onclick="loadDomainPoolMapping()">🔄 刷新</button>
+                    <button class="btn btn-sm btn-outline-primary" onclick="loadDomainPoolMapping()">刷新</button>
                 </div>
                 <div class="table-responsive">
                     <table class="table table-sm">
@@ -4376,7 +4080,7 @@ function renderHTML(C, runtimeState = {}) {
                 <div class="progress mb-3" style="height:12px; background:#2c2c2e; border-radius:6px;">
                     <div id="pg-bar" class="progress-bar" style="width:0%; background:var(--success);"></div>
                 </div>
-                <button id="btn-maintain" class="btn btn-dark w-100" onclick="runMaintain()">🔧 执行全部维护</button>
+                <button id="btn-maintain" class="btn btn-dark w-100" onclick="runMaintain()">执行全部维护</button>
             </div>
         </div>
     </div>
@@ -4910,7 +4614,7 @@ function renderHTML(C, runtimeState = {}) {
             const btn = document.getElementById('btn-save-config');
             if (btn) {
                 btn.disabled = false;
-                btn.textContent = '💾 保存改动';
+                btn.textContent = '保存改动';
                 if (configDirty) btn.style.display = 'inline-block';
             }
         }
@@ -5268,7 +4972,7 @@ function renderHTML(C, runtimeState = {}) {
         if (abortController) {
             abortController.abort();
             abortController = null;
-            btn.textContent = '⚡ 检测清洗';
+            btn.textContent = '检测清洗';
             btn.classList.remove('btn-danger');
             btn.classList.add('btn-warning');
             log('🛑 已停止检测', 'warn');
@@ -5279,7 +4983,7 @@ function renderHTML(C, runtimeState = {}) {
         abortController = new AbortController();
         const signal = abortController.signal;
         
-        btn.textContent = '🛑 停止检测';
+        btn.textContent = '停止检测';
         btn.classList.remove('btn-warning');
         btn.classList.add('btn-danger');
         
@@ -5432,7 +5136,7 @@ function renderHTML(C, runtimeState = {}) {
         } finally {
             abortController = null;
             updateFilterPreview();
-            btn.textContent = '⚡ 检测清洗';
+            btn.textContent = '检测清洗';
             btn.classList.remove('btn-danger');
             btn.classList.add('btn-warning');
             setTimeout(() => { pg.style.width = '0%'; }, 1000);
@@ -5636,7 +5340,7 @@ function renderHTML(C, runtimeState = {}) {
 
                 // 显示在表格中（与地址记录探测统一模板）
                 t.innerHTML = checkResults.map(r => renderIPRow(r,
-                    \`<button class="btn btn-sm btn-outline-primary" onclick="addToInput('\${escapeHTML(buildPoolLineFromCheckResult(r.ip, r))}')" title="添加到输入框">➕</button>\`
+                    \`<button class="btn btn-sm btn-outline-primary" onclick="addToInput('\${escapeHTML(buildPoolLineFromCheckResult(r.ip, r))}')" title="添加到输入框">添加</button>\`
                 )).join('');
                 
                 const activeCount = checkResults.filter(r => r.success).length;
@@ -5668,7 +5372,7 @@ function renderHTML(C, runtimeState = {}) {
 
             // 显示在表格中
             t.innerHTML = checkResults.map(r => renderIPRow(r,
-                \`<button class="btn btn-sm btn-outline-primary" onclick="addToInput('\${escapeHTML(buildPoolLineFromCheckResult(r.ip, r))}')" title="添加到输入框">➕</button>\`
+                \`<button class="btn btn-sm btn-outline-primary" onclick="addToInput('\${escapeHTML(buildPoolLineFromCheckResult(r.ip, r))}')" title="添加到输入框">添加</button>\`
             )).join('');
             
             const activeCount = checkResults.filter(r => r.success).length;
