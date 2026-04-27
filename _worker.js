@@ -3202,693 +3202,447 @@ function renderHTML(C, runtimeState = {}) {
         }
 
 
-        /* =====================================================================
-           方案 A：极简列表风 · 移动端优先落地版
-           只追加 CSS，不改前端 JS 模板字符串，避免 Worker 构建转义问题。
-        ===================================================================== */
+        /* ===== 方案 A：极简列表风修正版 ===== */
         :root {
-            --a-primary: #2563eb;
-            --a-primary-weak: #dbeafe;
-            --a-success: #16a34a;
-            --a-success-weak: #dcfce7;
-            --a-danger: #dc2626;
-            --a-danger-weak: #fee2e2;
-            --a-text: #111827;
-            --a-muted: #64748b;
-            --a-line: #e5e7eb;
-            --a-line-soft: #f1f5f9;
-            --a-bg: #f8fafc;
-            --a-card: #ffffff;
-            --a-field: #f8fafc;
-            --a-shadow: 0 1px 2px rgba(15, 23, 42, .04), 0 8px 24px rgba(15, 23, 42, .04);
+            --primary: #2563eb;
+            --success: #16a34a;
+            --danger: #dc2626;
+            --bg: #f8fafc;
+            --card: #ffffff;
+            --text: #0f172a;
+            --secondary: #64748b;
+            --line: #e5e7eb;
+            --line-soft: #f1f5f9;
         }
-        html,
         body {
-            background: var(--a-bg) !important;
-            color: var(--a-text) !important;
-            overflow-x: hidden;
+            background: var(--bg) !important;
+            color: var(--text) !important;
         }
-        body::before { display: none !important; }
         .container {
-            max-width: 1160px !important;
-            padding-left: 16px !important;
-            padding-right: 16px !important;
+            max-width: 1120px !important;
         }
-        .github-corner { opacity: .25; }
-        .github-corner svg { fill: #cbd5e1 !important; }
-
-        /* 顶部：去装饰化，保留上下文 */
-        .hero {
-            padding: 18px 0 12px !important;
+        .github-corner {
+            opacity: .18 !important;
         }
-        .hero h1 {
-            margin: 0 0 12px !important;
-            color: var(--a-text) !important;
-            font-size: 22px !important;
-            font-weight: 750 !important;
-            line-height: 1.25 !important;
-            letter-spacing: -.02em !important;
-        }
-        .hero-actions {
-            gap: 8px !important;
-            margin: 0 0 10px !important;
-        }
-        .guide-toggle,
-        .filter-help-btn {
-            width: 32px !important;
-            height: 32px !important;
-            min-width: 32px !important;
-            border-radius: 10px !important;
-            border: 1px solid var(--a-line) !important;
+        .card {
             background: #fff !important;
-            color: var(--a-muted) !important;
-            box-shadow: none !important;
+            border: 1px solid var(--line) !important;
+            border-radius: 16px !important;
+            box-shadow: 0 1px 2px rgba(15,23,42,.04) !important;
         }
-        .config-info,
-        .usage-guide,
-        .filter-help,
-        .filter-preview,
-        .custom-modal-stats {
+        .form-control,
+        .form-select {
             background: #fff !important;
-            border: 1px solid var(--a-line) !important;
-            color: var(--a-muted) !important;
-            box-shadow: none !important;
-            backdrop-filter: none !important;
-        }
-        .usage-guide code,
-        .filter-help code {
-            background: #eff6ff !important;
-            color: #1d4ed8 !important;
-            border-radius: 6px;
-        }
-        .kv-alert {
-            border-color: #fecaca !important;
-            background: #fef2f2 !important;
-            color: #991b1b !important;
-        }
-        .domain-selector { max-width: none !important; }
-        .domain-selector select {
-            min-height: 44px !important;
-            padding: 10px 14px !important;
+            border: 1px solid var(--line) !important;
             border-radius: 12px !important;
-            border: 1px solid var(--a-line) !important;
-            background-color: #fff !important;
-            color: var(--a-text) !important;
-            font-size: 15px !important;
+            color: var(--text) !important;
+            box-shadow: none !important;
+        }
+        .form-control:focus,
+        .form-select:focus {
+            border-color: #93c5fd !important;
+            box-shadow: 0 0 0 3px rgba(37,99,235,.12) !important;
+        }
+        .btn {
+            border-radius: 12px !important;
             font-weight: 700 !important;
             box-shadow: none !important;
         }
-
-        /* 卡片与控件统一 */
-        .card,
-        .config-mini-card,
-        .config-edit-panel,
-        .custom-modal {
-            background: var(--a-card) !important;
-            border: 1px solid var(--a-line) !important;
-            border-radius: 16px !important;
-            box-shadow: var(--a-shadow) !important;
-            backdrop-filter: none !important;
-        }
-        .card::before,
-        .config-mini-card::before,
-        .config-edit-panel::before,
-        .custom-modal::before { display: none !important; }
-        h6,
-        .field > span,
-        .config-mini-card h5,
-        .custom-modal-title,
-        .custom-modal-stats .value,
-        .text-dark,
-        .exit-ip {
-            color: var(--a-text) !important;
-        }
-        .text-secondary,
-        .field > small,
-        .config-mini-card .meta,
-        .switch-row label,
-        .custom-modal-content,
-        .custom-modal-stats .label {
-            color: var(--a-muted) !important;
-        }
-        .bg-light { background: #f8fafc !important; }
-        .form-control,
-        .form-select,
-        textarea.form-control {
-            min-height: 40px !important;
-            padding: 9px 12px !important;
-            border-radius: 12px !important;
-            border: 1px solid var(--a-line) !important;
-            background: var(--a-field) !important;
-            color: var(--a-text) !important;
-            font-size: 14px !important;
-            box-shadow: none !important;
-        }
-        .form-control::placeholder { color: #94a3b8 !important; }
-        .form-control:focus,
-        .form-select:focus {
+        .btn:hover { transform: none !important; box-shadow: none !important; }
+        .btn-primary { background: #2563eb !important; border-color: #2563eb !important; }
+        .btn-success { background: #16a34a !important; border-color: #16a34a !important; }
+        .btn-info { background: #0ea5e9 !important; border-color: #0ea5e9 !important; color: #fff !important; }
+        .btn-dark { background: #0f172a !important; border-color: #0f172a !important; }
+        .btn-outline-primary, .btn-outline-secondary, .btn-outline-success, .btn-outline-danger {
             background: #fff !important;
-            border-color: #93c5fd !important;
-            box-shadow: 0 0 0 3px rgba(37, 99, 235, .12) !important;
-        }
-        textarea.form-control,
-        #ip-input {
-            min-height: 150px !important;
-            line-height: 1.55 !important;
-        }
-        .btn,
-        .custom-modal-buttons button {
-            min-height: 40px !important;
-            padding: 8px 14px !important;
-            border-radius: 12px !important;
-            font-size: 14px !important;
-            font-weight: 650 !important;
-            line-height: 1.2 !important;
-            box-shadow: none !important;
-            border: 1px solid transparent !important;
-        }
-        .btn:hover,
-        .custom-modal-buttons button:hover {
-            transform: none !important;
-            box-shadow: 0 4px 14px rgba(15, 23, 42, .08) !important;
-        }
-        .btn-primary,
-        .custom-modal-buttons .btn-continue {
-            background: var(--a-primary) !important;
-            border-color: var(--a-primary) !important;
-            color: #fff !important;
-        }
-        .btn-success {
-            background: var(--a-success) !important;
-            border-color: var(--a-success) !important;
-            color: #fff !important;
-        }
-        .btn-danger {
-            background: var(--a-danger) !important;
-            border-color: var(--a-danger) !important;
-            color: #fff !important;
-        }
-        .btn-info {
-            background: #0ea5e9 !important;
-            border-color: #0ea5e9 !important;
-            color: #fff !important;
-        }
-        .btn-dark {
-            background: #111827 !important;
-            border-color: #111827 !important;
-            color: #fff !important;
-        }
-        .btn-outline-primary,
-        .btn-outline-secondary,
-        .btn-outline-success,
-        .btn-outline-danger,
-        .custom-modal-buttons .btn-abandon {
-            background: #fff !important;
-            border: 1px solid var(--a-line) !important;
+            border-color: var(--line) !important;
             color: #334155 !important;
         }
-        .btn-outline-primary { color: #2563eb !important; }
-        .btn-outline-success { color: #15803d !important; }
-        .btn-outline-danger { color: #dc2626 !important; }
-
-        /* 一级 Tab：分段切换 */
         .top-nav {
             display: grid !important;
-            grid-template-columns: 1fr 1fr !important;
+            grid-template-columns: 1fr 1fr;
             gap: 4px !important;
             padding: 4px !important;
-            margin-bottom: 14px !important;
-            background: #f1f5f9 !important;
-            border: 1px solid var(--a-line) !important;
+            border: 1px solid var(--line) !important;
             border-radius: 14px !important;
+            background: #f1f5f9 !important;
+            margin-bottom: 16px !important;
         }
         .nav-tab {
-            min-height: 42px !important;
+            min-height: 40px !important;
+            padding: 8px 10px !important;
             border: 0 !important;
-            border-radius: 11px !important;
+            border-radius: 10px !important;
             background: transparent !important;
             color: #475569 !important;
-            font-size: 15px !important;
-            font-weight: 750 !important;
-            box-shadow: none !important;
+            font-size: 14px !important;
+            font-weight: 800 !important;
         }
         .nav-tab.active {
             background: #fff !important;
-            color: var(--a-primary) !important;
-            box-shadow: 0 1px 2px rgba(15, 23, 42, .06) !important;
+            color: #2563eb !important;
+            box-shadow: 0 1px 2px rgba(15,23,42,.06) !important;
         }
-
-        /* 桌面表格也轻量化 */
-        .table-responsive,
-        .scroll-box {
-            border: 1px solid var(--a-line) !important;
-            background: #fff !important;
-            border-radius: 14px !important;
-        }
-        .table { margin-bottom: 0 !important; }
-        .table th {
-            background: #f8fafc !important;
-            color: var(--a-muted) !important;
-            border-bottom: 1px solid var(--a-line) !important;
-            text-transform: none !important;
-            font-size: 12px !important;
-            padding: 11px 10px !important;
-            white-space: nowrap;
-        }
-        .table td {
-            color: var(--a-text) !important;
-            border-top: 1px solid var(--a-line-soft) !important;
-            padding: 11px 10px !important;
-            vertical-align: middle !important;
-        }
-        .status-badge,
         .latency-badge,
+        .status-badge,
         .colo-badge,
-        .badge,
         .ip-info-tag {
             display: inline-flex !important;
             align-items: center !important;
             justify-content: center !important;
-            min-height: 23px !important;
-            padding: 3px 8px !important;
+            min-height: 22px !important;
+            padding: 2px 8px !important;
             border-radius: 999px !important;
             font-size: 12px !important;
-            font-weight: 700 !important;
+            font-weight: 800 !important;
+            line-height: 1.2 !important;
             white-space: nowrap !important;
         }
         .latency-badge { color: #1d4ed8 !important; background: #dbeafe !important; }
         .status-badge.ok { color: #166534 !important; background: #dcfce7 !important; }
-        .status-badge.bad { color: #991b1b !important; background: #fee2e2 !important; }
+        .status-badge.bad { color: #b91c1c !important; background: #fee2e2 !important; }
         .colo-badge { color: #475569 !important; background: #e2e8f0 !important; }
-        .ip-info-tag { color: #0f766e !important; background: #ccfbf1 !important; }
-        .exit-stack { color: #6d28d9 !important; background: #ede9fe !important; }
-        .exit-list-cell {
-            min-width: 360px !important;
-            max-width: 660px !important;
-            overflow-x: auto;
-        }
-        .exit-detail {
-            display: flex !important;
-            align-items: center !important;
-            gap: 8px !important;
-            min-height: 28px !important;
-            width: max-content !important;
-            min-width: 100% !important;
-            padding: 2px 0 !important;
-            border-bottom: 0 !important;
-        }
-        .exit-ip {
-            font-size: 12px !important;
-            font-weight: 650 !important;
-            white-space: nowrap !important;
-        }
-        .exit-field {
-            max-width: 240px;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            white-space: nowrap;
-        }
-        .console {
-            background: #0f172a !important;
-            color: #86efac !important;
-            border: 0 !important;
-            border-radius: 14px !important;
-        }
-        .progress { background: #e2e8f0 !important; border: 0 !important; }
-        .progress-bar { background: linear-gradient(90deg, #16a34a, #2563eb) !important; }
-        .switch-row label {
-            background: #fff !important;
-            border: 1px solid var(--a-line) !important;
-            border-radius: 12px !important;
-            padding: 10px 12px !important;
-        }
+        .exit-stack { color: #6d28d9 !important; background: #f3e8ff !important; }
+        .exit-field { color: #0f766e !important; background: #ccfbf1 !important; }
 
-        /* 模块内固定区布局 */
-        #page-dashboard > .card.p-3 > .d-flex.justify-content-between.align-items-center.mb-3.flex-wrap.gap-2 {
-            display: grid !important;
-            grid-template-columns: auto minmax(0, 1fr) !important;
-            align-items: center !important;
-            gap: 12px !important;
-        }
-        #page-dashboard > .card.p-3 > .d-flex.justify-content-between.align-items-center.mb-3.flex-wrap.gap-2 > .d-flex.gap-2.align-items-center.flex-grow-1 {
-            display: grid !important;
-            grid-template-columns: minmax(0, 1fr) 72px 72px !important;
-            width: 100% !important;
-            max-width: none !important;
-            gap: 8px !important;
-        }
-        #manual-add-section .input-group {
-            display: grid !important;
-            grid-template-columns: minmax(0, 1fr) 72px !important;
-            gap: 8px !important;
-        }
-        #manual-add-section .btn { width: 72px !important; }
-        .col-lg-7 > .card.p-4:first-child > .d-flex.justify-content-between.align-items-center.mb-3.flex-wrap.gap-2 {
-            display: grid !important;
-            grid-template-columns: minmax(0, 1fr) auto !important;
-            gap: 12px !important;
-        }
-        .col-lg-7 > .card.p-4:first-child > .d-flex.justify-content-between.align-items-center.mb-3.flex-wrap.gap-2 > .d-flex.gap-1.align-items-center {
-            display: grid !important;
-            grid-template-columns: 136px repeat(3, 38px) !important;
-            gap: 6px !important;
-        }
-        .col-lg-7 > .card.p-4:first-child > .d-flex.justify-content-between.align-items-center.mb-3.flex-wrap.gap-2 > .d-flex.gap-1.align-items-center .btn {
-            min-height: 38px !important;
-            padding: 0 !important;
-        }
-        .ip-content-area > .d-flex.gap-2.mb-2.align-items-center {
-            display: grid !important;
-            grid-template-columns: minmax(0, 1fr) auto auto auto !important;
-            gap: 8px !important;
-        }
-        .filter-toolbar {
-            display: grid !important;
-            gap: 8px !important;
-        }
-        .filter-line {
-            display: grid !important;
-            grid-template-columns: minmax(0, 1fr) 36px auto auto auto !important;
-            gap: 8px !important;
-            align-items: center !important;
-        }
-        #main-actions {
-            display: grid !important;
-            grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto !important;
-            gap: 8px !important;
-        }
-        #main-actions .btn { width: 100% !important; }
-
-        /* ========================= 手机端：方案 A 极简列表 ========================= */
         @media (max-width: 768px) {
             .container {
                 padding-left: 12px !important;
                 padding-right: 12px !important;
             }
             .hero {
-                padding: 14px 0 10px !important;
+                padding: 12px 0 12px !important;
             }
-            .hero h1 {
-                font-size: 20px !important;
-                margin-bottom: 10px !important;
+            .hero h1,
+            .hero-actions,
+            #usage-guide {
+                display: none !important;
             }
-            .hero-actions {
-                align-items: flex-start !important;
-            }
-            .config-info {
-                flex: 1 1 100% !important;
-                font-size: 12px !important;
-                padding: 8px 10px !important;
+            .domain-selector {
+                max-width: none !important;
+                margin: 0 !important;
             }
             .domain-selector select {
-                min-height: 44px !important;
+                height: 44px !important;
+                padding: 0 36px 0 14px !important;
                 font-size: 15px !important;
-            }
-            .top-nav {
-                margin-bottom: 12px !important;
-            }
-            .nav-tab {
-                min-height: 40px !important;
-                font-size: 15px !important;
+                font-weight: 800 !important;
+                border-radius: 12px !important;
             }
             .card.p-3,
             .card.p-4 {
                 padding: 14px !important;
-                border-radius: 16px !important;
+            }
+            h6 {
+                font-size: 17px !important;
+                font-weight: 800 !important;
             }
             .btn {
                 min-height: 38px !important;
-                padding: 8px 10px !important;
+                padding: 7px 12px !important;
                 font-size: 13px !important;
-                border-radius: 11px !important;
+                line-height: 1.2 !important;
             }
             .form-control,
-            .form-select,
-            textarea.form-control {
+            .form-select {
                 min-height: 38px !important;
                 padding: 8px 10px !important;
                 font-size: 13px !important;
             }
+
+            /* 解析实况：工具区稳定两行，不挤压输入框 */
             #page-dashboard > .card.p-3 > .d-flex.justify-content-between.align-items-center.mb-3.flex-wrap.gap-2 {
+                display: grid !important;
                 grid-template-columns: 1fr !important;
                 gap: 10px !important;
+                align-items: stretch !important;
+                margin-bottom: 10px !important;
             }
             #page-dashboard > .card.p-3 > .d-flex.justify-content-between.align-items-center.mb-3.flex-wrap.gap-2 > .d-flex.gap-2.align-items-center.flex-grow-1 {
-                grid-template-columns: minmax(0, 1fr) 62px 62px !important;
+                display: grid !important;
+                grid-template-columns: minmax(0, 1fr) 58px 58px !important;
+                gap: 8px !important;
+                max-width: none !important;
+                width: 100% !important;
+            }
+            #lookup-domain {
+                min-width: 0 !important;
+                width: 100% !important;
+                overflow: hidden !important;
+                text-overflow: ellipsis !important;
+            }
+            #page-dashboard > .card.p-3 > .d-flex .btn-sm {
+                width: 58px !important;
+                min-width: 58px !important;
+                padding-left: 0 !important;
+                padding-right: 0 !important;
+            }
+            #manual-add-section {
+                margin-bottom: 12px !important;
             }
             #manual-add-section .input-group {
-                grid-template-columns: minmax(0, 1fr) 62px !important;
+                display: grid !important;
+                grid-template-columns: minmax(0, 1fr) 64px !important;
+                gap: 8px !important;
+                align-items: stretch !important;
+                width: 100% !important;
             }
-            #manual-add-section .btn { width: 62px !important; }
+            #manual-add-section .input-group > .form-control,
+            #manual-add-section .input-group > .btn {
+                width: 100% !important;
+                min-width: 0 !important;
+                border-radius: 12px !important;
+            }
+            #manual-add-ip {
+                min-width: 0 !important;
+                overflow: hidden !important;
+                text-overflow: ellipsis !important;
+            }
 
-            /* 状态列表：不横向滚动，不大卡片，每个 IP 两行 */
+            /* 状态列表：一主行 + 一辅行，完整 IP，不截断 */
             #status-display {
                 max-height: none !important;
                 overflow: visible !important;
-                border: 1px solid var(--a-line) !important;
+                border: 0 !important;
+                background: transparent !important;
+                padding: 0 !important;
+            }
+            #status-display .table-responsive {
+                overflow: visible !important;
+                border: 1px solid var(--line) !important;
                 border-radius: 14px !important;
                 background: #fff !important;
-            }
-            #status-display > .table-responsive {
-                overflow: visible !important;
-                border: 0 !important;
-                border-radius: 14px !important;
-                background: transparent !important;
             }
             .status-table,
-            .status-table tbody,
-            .status-table tr,
-            .status-table td {
+            .status-table tbody {
                 display: block !important;
                 width: 100% !important;
+                margin: 0 !important;
             }
-            .status-table thead { display: none !important; }
-            .status-table tbody { margin: 0 !important; padding: 0 !important; }
+            .status-table thead {
+                display: none !important;
+            }
             .status-table tr {
-                position: relative !important;
                 display: grid !important;
-                grid-template-columns: minmax(0, 1fr) auto auto auto 30px !important;
+                grid-template-columns: minmax(132px, 1fr) auto auto auto 28px !important;
                 grid-template-areas:
-                    "addr latency status colo action"
-                    "detail detail detail detail detail" !important;
-                align-items: center !important;
+                    "ip delay stat colo act"
+                    "exit exit exit exit exit" !important;
                 column-gap: 8px !important;
-                row-gap: 6px !important;
-                padding: 10px 8px 10px 12px !important;
-                border-bottom: 1px solid var(--a-line-soft) !important;
+                row-gap: 7px !important;
+                align-items: center !important;
+                padding: 12px 10px !important;
+                border-bottom: 1px solid var(--line-soft) !important;
                 background: #fff !important;
             }
-            .status-table tr:last-child { border-bottom: 0 !important; }
+            .status-table tr:last-child {
+                border-bottom: 0 !important;
+            }
             .status-table td {
+                display: block !important;
                 padding: 0 !important;
                 border: 0 !important;
-                white-space: normal !important;
+                background: transparent !important;
                 text-align: left !important;
                 min-width: 0 !important;
-            }
-            .status-table td:nth-child(1) {
-                grid-area: addr !important;
-                font-size: 15px !important;
-                font-weight: 750 !important;
-                line-height: 1.25 !important;
-                overflow: hidden !important;
-                text-overflow: ellipsis !important;
                 white-space: nowrap !important;
             }
-            .status-table td:nth-child(2) { grid-area: latency !important; }
-            .status-table td:nth-child(3) { grid-area: status !important; }
-            .status-table td:nth-child(5) { grid-area: colo !important; }
+            .status-table td:nth-child(1) {
+                grid-area: ip !important;
+                overflow: visible !important;
+                text-overflow: clip !important;
+                font-size: 15px !important;
+                line-height: 24px !important;
+                font-weight: 800 !important;
+                color: var(--text) !important;
+                font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace !important;
+            }
+            .status-table td:nth-child(2) { grid-area: delay !important; justify-self: end !important; }
+            .status-table td:nth-child(3) { grid-area: stat !important; justify-self: end !important; }
+            .status-table td:nth-child(5) { grid-area: colo !important; justify-self: end !important; }
             .status-table td:nth-child(6) {
-                grid-area: action !important;
-                text-align: right !important;
+                grid-area: act !important;
+                justify-self: end !important;
+                width: 28px !important;
+                min-width: 28px !important;
+                text-align: center !important;
             }
             .status-table td:nth-child(6) a,
             .status-table td:nth-child(6) button {
                 display: inline-flex !important;
-                align-items: center !important;
-                justify-content: center !important;
                 width: 28px !important;
                 height: 28px !important;
-                min-width: 28px !important;
-                min-height: 28px !important;
+                align-items: center !important;
+                justify-content: center !important;
                 padding: 0 !important;
                 border-radius: 8px !important;
-                font-size: 13px !important;
+                font-size: 14px !important;
             }
             .status-table td:nth-child(4) {
-                grid-area: detail !important;
-                margin-left: 0 !important;
-                padding-top: 2px !important;
-                min-width: 0 !important;
-                max-width: none !important;
+                grid-area: exit !important;
                 width: 100% !important;
+                max-width: none !important;
+                min-width: 0 !important;
                 overflow: visible !important;
-                border: 0 !important;
-                background: transparent !important;
+                white-space: normal !important;
+                padding-left: 8px !important;
+                border-left: 2px solid #e2e8f0 !important;
             }
-            .status-table .latency-badge,
-            .status-table .status-badge,
-            .status-table .colo-badge,
-            .status-table .ip-info-tag {
-                min-height: 22px !important;
-                padding: 2px 8px !important;
-                font-size: 11px !important;
-                line-height: 18px !important;
+            .exit-list-cell {
+                border-radius: 0 !important;
+                border-top: 0 !important;
+                background: transparent !important;
             }
             .exit-detail {
                 display: flex !important;
-                flex-wrap: wrap !important;
                 align-items: center !important;
                 gap: 6px !important;
+                flex-wrap: wrap !important;
+                min-height: 24px !important;
                 width: 100% !important;
                 min-width: 0 !important;
                 padding: 0 !important;
                 margin: 0 !important;
+                border: 0 !important;
             }
             .exit-ip {
+                display: inline-block !important;
+                color: #0f172a !important;
                 font-size: 13px !important;
-                font-weight: 650 !important;
+                font-weight: 700 !important;
                 line-height: 22px !important;
                 white-space: nowrap !important;
-                overflow: hidden !important;
-                text-overflow: ellipsis !important;
-                max-width: 150px !important;
+                overflow: visible !important;
+                text-overflow: clip !important;
+                font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace !important;
             }
-            .exit-field {
-                max-width: 100% !important;
+            .ip-info-tag {
+                min-height: 22px !important;
+                padding: 2px 7px !important;
+                font-size: 12px !important;
+            }
+            .latency-badge,
+            .status-badge,
+            .colo-badge {
+                min-width: 50px !important;
             }
 
-            /* IP 库管理移动端收口 */
+            /* IP 库管理收口 */
             .col-lg-7 > .card.p-4:first-child > .d-flex.justify-content-between.align-items-center.mb-3.flex-wrap.gap-2 {
+                display: grid !important;
                 grid-template-columns: 1fr !important;
+                gap: 8px !important;
             }
             .col-lg-7 > .card.p-4:first-child > .d-flex.justify-content-between.align-items-center.mb-3.flex-wrap.gap-2 > .d-flex.gap-1.align-items-center {
-                grid-template-columns: minmax(0, 1fr) 36px 36px 36px !important;
+                display: grid !important;
+                grid-template-columns: minmax(0, 1fr) 34px 34px 34px !important;
+                gap: 6px !important;
                 width: 100% !important;
             }
-            #pool-selector { width: 100% !important; }
+            #pool-selector {
+                width: 100% !important;
+            }
             .ip-content-area > .d-flex.gap-2.mb-2.align-items-center {
+                display: grid !important;
                 grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+                gap: 8px !important;
             }
             .ip-content-area > .d-flex.gap-2.mb-2.align-items-center > #remote-url {
                 grid-column: 1 / -1 !important;
             }
             #ip-input {
-                min-height: 140px !important;
+                min-height: 132px !important;
                 font-size: 13px !important;
+                line-height: 1.5 !important;
             }
             .filter-line {
-                grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+                display: grid !important;
+                grid-template-columns: 1fr 36px 1fr 1fr 1fr !important;
+                gap: 6px !important;
+                align-items: center !important;
             }
-            .filter-line > #universal-filter {
+            .filter-line #universal-filter {
                 grid-column: 1 / -1 !important;
             }
-            .filter-line > .filter-help-btn {
-                width: 36px !important;
-                justify-self: start !important;
-            }
-            .filter-line > .btn { width: 100% !important; }
             #main-actions {
+                display: grid !important;
                 grid-template-columns: 1fr 1fr !important;
+                gap: 8px !important;
             }
             #main-actions .btn:last-child {
                 grid-column: 1 / -1 !important;
             }
 
-            /* 域名池绑定：一行一个条目 */
-            #domain-binding-list,
-            #domain-binding-list tr,
-            #domain-binding-list td {
-                display: block !important;
-                width: 100% !important;
-            }
+            /* 域名池绑定：保持一行式 */
             #domain-binding-list tr {
                 display: grid !important;
-                grid-template-columns: minmax(0, 1fr) minmax(116px, 42%) !important;
+                grid-template-columns: minmax(0, 1fr) 146px !important;
                 gap: 10px !important;
                 align-items: center !important;
-                min-height: 56px !important;
-                padding: 8px 10px !important;
-                border-top: 1px solid var(--a-line-soft) !important;
+                border-bottom: 1px solid var(--line-soft) !important;
             }
-            #domain-binding-list tr:first-child { border-top: 0 !important; }
+            #domain-binding-list tr:last-child { border-bottom: 0 !important; }
             #domain-binding-list td {
+                display: block !important;
+                padding: 10px 6px !important;
                 border: 0 !important;
-                padding: 0 !important;
                 min-width: 0 !important;
-                text-align: left !important;
             }
             #domain-binding-list code {
                 display: block !important;
-                background: transparent !important;
-                padding: 0 !important;
-                color: var(--a-text) !important;
-                font-size: 14px !important;
-                font-weight: 650 !important;
                 white-space: nowrap !important;
                 overflow: hidden !important;
                 text-overflow: ellipsis !important;
+                font-size: 13px !important;
+                color: #0f172a !important;
             }
             #domain-binding-list select {
                 width: 100% !important;
-                min-height: 36px !important;
-                font-size: 13px !important;
+                height: 36px !important;
             }
-
+            #page-dashboard .table-responsive {
+                border-radius: 14px !important;
+            }
             .console {
                 height: 220px !important;
                 font-size: 11px !important;
                 padding: 12px !important;
             }
-            .config-grid,
-            .config-edit-grid,
-            .config-card-grid {
-                grid-template-columns: 1fr !important;
-            }
-            .config-grid .span-2 { grid-column: auto !important; }
-            .switch-row { grid-template-columns: 1fr !important; }
-            .toast {
-                left: 12px !important;
-                right: 12px !important;
-                bottom: calc(12px + env(safe-area-inset-bottom, 0px)) !important;
-                width: auto !important;
-            }
         }
 
         @media (max-width: 430px) {
-            .container {
-                padding-left: 10px !important;
-                padding-right: 10px !important;
-            }
-            .hero h1 { font-size: 19px !important; }
-            .card.p-3,
-            .card.p-4 { padding: 12px !important; }
+            .container { padding-left: 10px !important; padding-right: 10px !important; }
+            .card.p-3, .card.p-4 { padding: 12px !important; }
             #page-dashboard > .card.p-3 > .d-flex.justify-content-between.align-items-center.mb-3.flex-wrap.gap-2 > .d-flex.gap-2.align-items-center.flex-grow-1 {
-                grid-template-columns: minmax(0, 1fr) 56px 56px !important;
+                grid-template-columns: minmax(0, 1fr) 54px 54px !important;
+                gap: 6px !important;
             }
             #manual-add-section .input-group {
-                grid-template-columns: minmax(0, 1fr) 56px !important;
+                grid-template-columns: minmax(0, 1fr) 58px !important;
+                gap: 6px !important;
             }
-            #manual-add-section .btn { width: 56px !important; }
             .status-table tr {
-                grid-template-columns: minmax(0, 1fr) auto auto auto 28px !important;
+                grid-template-columns: minmax(116px, 1fr) auto auto auto 24px !important;
                 column-gap: 6px !important;
-                padding: 10px 7px 10px 10px !important;
+                padding: 10px 8px !important;
             }
             .status-table td:nth-child(1) {
                 font-size: 14px !important;
             }
-            .status-table .latency-badge,
-            .status-table .status-badge,
-            .status-table .colo-badge,
-            .status-table .ip-info-tag {
+            .latency-badge,
+            .status-badge,
+            .colo-badge {
+                min-width: 44px !important;
                 padding: 2px 6px !important;
-                font-size: 10px !important;
+                font-size: 11px !important;
             }
-            .exit-ip { max-width: 128px !important; }
+            .ip-info-tag {
+                padding: 2px 6px !important;
+                font-size: 11px !important;
+            }
+            .exit-ip { font-size: 12px !important; }
             #domain-binding-list tr {
-                grid-template-columns: minmax(0, 1fr) 118px !important;
-                gap: 8px !important;
+                grid-template-columns: minmax(0, 1fr) 134px !important;
             }
         }
 
@@ -4053,7 +3807,7 @@ function renderHTML(C, runtimeState = {}) {
             <div class="card p-4 mb-3">
                 <div class="d-flex justify-content-between align-items-center mb-3">
                     <h6 class="m-0 fw-bold">🔗 域名池绑定</h6>
-                    <button class="btn btn-sm btn-outline-primary" onclick="loadDomainPoolMapping()">刷新</button>
+                    <button class="btn btn-sm btn-outline-primary" onclick="loadDomainPoolMapping()">🔄 刷新</button>
                 </div>
                 <div class="table-responsive">
                     <table class="table table-sm">
@@ -4614,7 +4368,7 @@ function renderHTML(C, runtimeState = {}) {
             const btn = document.getElementById('btn-save-config');
             if (btn) {
                 btn.disabled = false;
-                btn.textContent = '保存改动';
+                btn.textContent = '💾 保存改动';
                 if (configDirty) btn.style.display = 'inline-block';
             }
         }
@@ -4983,7 +4737,7 @@ function renderHTML(C, runtimeState = {}) {
         abortController = new AbortController();
         const signal = abortController.signal;
         
-        btn.textContent = '停止检测';
+        btn.textContent = '🛑 停止检测';
         btn.classList.remove('btn-warning');
         btn.classList.add('btn-danger');
         
