@@ -4370,6 +4370,157 @@ function renderHTML(C, runtimeState = {}) {
             .toast { width: calc(100vw - 20px); right: 10px; left: 10px; bottom: calc(10px + env(safe-area-inset-bottom, 0px)); }
         }
 
+
+
+        /* ===== 移动端内容完整性修复 ===== */
+        @media (max-width: 768px) {
+            #status-display {
+                max-height: none !important;
+                overflow: visible !important;
+                border: 0 !important;
+                background: transparent !important;
+            }
+            #status-display .table-responsive,
+            #domain-binding-list {
+                overflow: visible !important;
+            }
+            #status-display .table-responsive,
+            #page-dashboard .table-responsive,
+            #page-dashboard .scroll-box,
+            #domain-binding-list {
+                -webkit-overflow-scrolling: auto !important;
+            }
+            .status-table {
+                width: 100% !important;
+                table-layout: auto !important;
+            }
+            .status-table thead,
+            #domain-binding-list thead {
+                display: none !important;
+            }
+            .status-table,
+            .status-table tbody,
+            .status-table tr,
+            .status-table td,
+            #domain-binding-list,
+            #domain-binding-list tr,
+            #domain-binding-list td {
+                display: block !important;
+                width: 100% !important;
+            }
+            .status-table tbody,
+            #domain-binding-list {
+                padding: 0 !important;
+            }
+            .status-table tr.status-row,
+            #domain-binding-list tr.binding-row {
+                background: #fff !important;
+                border: 1px solid var(--line) !important;
+                border-radius: 14px !important;
+                margin: 0 0 10px 0 !important;
+                overflow: hidden !important;
+            }
+            .status-table td,
+            #domain-binding-list td {
+                padding: 10px 12px !important;
+                border-top: 1px solid #eef2f7 !important;
+                white-space: normal !important;
+                text-align: left !important;
+                overflow: visible !important;
+            }
+            .status-table td:first-child,
+            #domain-binding-list td:first-child {
+                border-top: 0 !important;
+                background: #f8fafc !important;
+            }
+            .status-table td::before,
+            #domain-binding-list td::before {
+                content: attr(data-label);
+                display: block !important;
+                margin-bottom: 6px;
+                color: var(--secondary);
+                font-size: 11px;
+                font-weight: 700;
+                line-height: 1.2;
+            }
+            .status-table td:first-child::before {
+                display: none !important;
+            }
+            .status-primary-cell {
+                word-break: break-all !important;
+                font-size: 13px !important;
+                font-weight: 800 !important;
+            }
+            .status-action-cell {
+                text-align: left !important;
+            }
+            .exit-list-cell {
+                min-width: 0 !important;
+                max-width: none !important;
+                width: 100% !important;
+                overflow: visible !important;
+                background: transparent !important;
+                border: 0 !important;
+                padding-left: 12px !important;
+                padding-right: 12px !important;
+            }
+            .exit-detail {
+                display: grid !important;
+                width: 100% !important;
+                min-width: 0 !important;
+                grid-template-columns: 34px minmax(0, 1fr) auto auto !important;
+                gap: 4px !important;
+                align-items: center !important;
+            }
+            .exit-ip,
+            .exit-field {
+                min-width: 0 !important;
+                white-space: nowrap !important;
+                overflow: hidden !important;
+                text-overflow: ellipsis !important;
+            }
+            .status-table .latency-badge,
+            .status-table .status-badge,
+            .status-table .colo-badge {
+                min-height: 22px !important;
+            }
+            #domain-binding-list code {
+                display: block;
+                white-space: normal;
+                word-break: break-all;
+                font-size: 13px;
+                line-height: 1.45;
+            }
+            #domain-binding-list select,
+            #domain-binding-list .form-select {
+                width: 100% !important;
+                min-width: 0 !important;
+            }
+            /* 域名池绑定卡片外层去掉横向滚动 */
+            #page-dashboard .card:nth-of-type(3) .table-responsive {
+                overflow: visible !important;
+                border: 0 !important;
+                background: transparent !important;
+            }
+        }
+        @media (max-width: 430px) {
+            .status-table td,
+            #domain-binding-list td {
+                padding: 9px 10px !important;
+            }
+            .status-table td::before,
+            #domain-binding-list td::before {
+                margin-bottom: 5px;
+                font-size: 10px;
+            }
+            .exit-detail {
+                grid-template-columns: 30px minmax(0, 1fr) auto !important;
+            }
+            .exit-detail .exit-field:last-child {
+                grid-column: 2 / -1;
+            }
+        }
+
     </style>
 </head>
 <body class="pb-5">
@@ -6004,20 +6155,20 @@ function renderHTML(C, runtimeState = {}) {
             
             const options = selectablePools.map(pool => {
                 const selected = pool === boundPool ? 'selected' : '';
-                return \`<option value="\${escapeHTML(pool)}" \${selected}>\${escapeHTML(getPoolName(pool))}</option>\`;
+                return `<option value="${escapeHTML(pool)}" ${selected}>${escapeHTML(getPoolName(pool))}</option>`;
             }).join('');
 
-            return \`
-                <tr>
-                    <td><code>\${escapeHTML(domain)}</code></td>
-                    <td>
+            return `
+                <tr class="binding-row">
+                    <td data-label="域名"><code>${escapeHTML(domain)}</code></td>
+                    <td data-label="绑定池">
                         <select class="form-select form-select-sm"
-                                onchange="bindDomainToPool('\${escapeHTML(domain)}', this.value)">
-                            \${options}
+                                onchange="bindDomainToPool('${escapeHTML(domain)}', this.value)">
+                            ${options}
                         </select>
                     </td>
                 </tr>
-            \`;
+            `;
         }).join('');
     }
     
