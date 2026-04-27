@@ -3,7 +3,7 @@
  * Frontend is deployed as remote static assets; Worker serves it through same-origin proxy.
  */
 
-const VERSION = '29.2.0-txt-quote-safe';
+const VERSION = '29.3.0-txt-quoted-manual-all';
 const JSON_TYPE = 'application/json; charset=UTF-8';
 const CHECK_CACHE_KEY = 'check_cache_v2';
 const CHECK_FAIL_KEY = 'check_fail_v2';
@@ -575,7 +575,7 @@ function normalizeTxtValue(value) {
   if (!s.includes('"')) return stripWrappingQuotes(s);
 
   // Cloudflare 控制台 / DNS JSON 常把 TXT 展示为 "..."，多段 TXT 可能显示为 "..." "..."。
-  // 这里只做读取侧兼容：去掉展示层引号、保留逗号/空格等分隔符；写入侧不主动加引号。
+  // 读取侧兼容：去掉展示层引号、保留逗号/空格等分隔符；写入侧会统一包一层标准引号。
   let out = '';
   for (let i = 0; i < s.length; i++) {
     const ch = s[i];
@@ -668,12 +668,17 @@ async function cfListRecords(config, domain, type) {
   }
   return out;
 }
+function quoteTxtContentForCloudflare(content) {
+  const clean = normalizeTxtValue(content);
+  if (!clean) return '""';
+  return '"' + clean.replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"';
+}
 function prepareDnsRecordBody(config, record) {
   const body = { ttl: config.dnsTtl, proxied: config.proxied, ...record };
   if (body.type === 'TXT') {
     delete body.proxied;
-    // Cloudflare API 接收不带外层引号的 content。控制台/查询结果可能显示引号，不能在这里主动包引号。
-    body.content = normalizeTxtValue(body.content);
+    // Cloudflare 控制台要求 TXT 内容字段用引号包住；这里统一写成一层引号，并避免双引号。
+    body.content = quoteTxtContentForCloudflare(body.content);
   }
   return body;
 }
@@ -1253,15 +1258,16 @@ async function maintainAllDomains(env, isManual, config) {
     };
     const reports = [];
     let cursor = toInt(await store.get(MAINTAIN_CURSOR_KEY), 0, 0, Math.max(0, targets.length - 1));
-    const max = Math.min(config.maintainMaxDomains, targets.length);
+    // 手动维护默认处理全部域名；MAINTAIN_MAX_DOMAINS 只限制 Cron，避免误以为手动也只能维护 2 个。
+    const max = isManual ? targets.length : Math.min(config.maintainMaxDomains, targets.length);
     for (let i = 0; i < max; i++) {
-      const idx = (cursor + i) % targets.length;
+      const idx = isManual ? i : (cursor + i) % targets.length;
       const target = targets[idx];
       reports.push(await maintainTarget(env, target, mapping, state, config));
     }
 
-    const nextCursor = (cursor + max) % targets.length;
-    if (max > 0) await store.put(MAINTAIN_CURSOR_KEY, String(nextCursor));
+    const nextCursor = isManual ? cursor : ((cursor + max) % targets.length);
+    if (!isManual && max > 0) await store.put(MAINTAIN_CURSOR_KEY, String(nextCursor));
     if (config.checkCacheEnabled && state.cacheDirty) await saveJsonKV(env, CHECK_CACHE_KEY, state.cache);
     if (state.failDirty) await saveJsonKV(env, CHECK_FAIL_KEY, state.failCount);
 
