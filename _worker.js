@@ -3,7 +3,7 @@
  * Frontend is deployed as remote static assets; Worker serves it through same-origin proxy.
  */
 
-const VERSION = '27.1.0-hardening-resource-guard';
+const VERSION = '29.0.0-manual-pool-txt';
 const JSON_TYPE = 'application/json; charset=UTF-8';
 const CHECK_CACHE_KEY = 'check_cache_v2';
 const CHECK_FAIL_KEY = 'check_fail_v2';
@@ -23,7 +23,7 @@ const DEFAULTS = Object.freeze({
   dohTimeout: 5000,
   cfTimeout: 10000,
   remoteTimeout: 8000,
-  maxCheckPerDomain: 20,
+  maxCheckPerDomain: 10,
   checkBatchSize: 5,
   maintainMaxDomains: 2,
   maxPoolLines: 5000,
@@ -32,13 +32,21 @@ const DEFAULTS = Object.freeze({
   failThreshold: 3,
   checkCacheEnabled: true,
   checkCacheTtlMinutes: 420,
-  maxTxtContentLength: 240,
-  maxTxtTargets: 12,
+  maxTxtContentLength: 768,
+  maxTxtTargets: 25,
   maintainLockTtlSeconds: 300,
+  txtOnly: true,
+  enableARecords: false,
+  preferTxtResolve: true,
+  allowAResolve: true,
+  publicTxtEndpoint: true,
+  publicTxtAllowAny: false,
+  txtStrictPort: true,
+  enableRemoteImport: false,
 });
 
 const SYSTEM_POOLS = new Set(['pool', 'pool_trash']);
-const MODE_LABELS = { A: 'A记录', TXT: 'TXT记录', ALL: 'A+TXT' };
+const MODE_LABELS = { TXT: 'TXT记录', A: 'A记录(兼容)', ALL: 'A+TXT(兼容)' };
 
 const toBool = (value, fallback = false) => {
   if (value === undefined || value === null || value === '') return fallback;
@@ -126,7 +134,15 @@ function createConfig(env, request = null) {
     ipInfoEnabled: toBool(env?.IP_INFO_ENABLED, false),
     ipInfoApi: envText(env, 'IP_INFO_API', 'http://ip-api.com/json'),
     allowedOrigins: envText(env, 'ALLOWED_ORIGINS'),
-    targets: parseTargets(envText(env, 'CF_DOMAIN'), toInt(env?.DEFAULT_MIN_ACTIVE, DEFAULTS.defaultMinActive, 1, 200)),
+    txtOnly: toBool(env?.TXT_ONLY, DEFAULTS.txtOnly),
+    enableARecords: toBool(env?.ENABLE_A_RECORDS, DEFAULTS.enableARecords),
+    preferTxtResolve: toBool(env?.PREFER_TXT_RESOLVE, DEFAULTS.preferTxtResolve),
+    allowAResolve: toBool(env?.ALLOW_A_RESOLVE, DEFAULTS.allowAResolve),
+    publicTxtEndpoint: toBool(env?.PUBLIC_TXT_ENDPOINT, DEFAULTS.publicTxtEndpoint),
+    publicTxtAllowAny: toBool(env?.PUBLIC_TXT_ALLOW_ANY, DEFAULTS.publicTxtAllowAny),
+    txtStrictPort: toBool(env?.TXT_STRICT_PORT, DEFAULTS.txtStrictPort),
+    enableRemoteImport: toBool(env?.ENABLE_REMOTE_IMPORT, DEFAULTS.enableRemoteImport),
+    targets: parseTargets(envText(env, 'CF_DOMAIN'), toInt(env?.DEFAULT_MIN_ACTIVE, DEFAULTS.defaultMinActive, 1, 200), toBool(env?.ENABLE_A_RECORDS, DEFAULTS.enableARecords)),
     projectUrl: request ? new URL(request.url).origin : '',
   };
   return Object.freeze(config);
@@ -362,7 +378,7 @@ function redirectWithoutKey(url, setCookieValue = '') {
 }
 
 
-function parseTargets(raw, defaultMinActive) {
+function parseTargets(raw, defaultMinActive, enableARecords = false) {
   return String(raw || '').split(/[\n,;]+/).map(s => s.trim()).filter(Boolean).map((entry, index) => {
     let text = entry.split('#')[0].trim();
     let minActive = defaultMinActive;
@@ -371,9 +387,21 @@ function parseTargets(raw, defaultMinActive) {
       minActive = Math.max(1, Number(minMatch[1]));
       text = text.replace(/&[0-9]{1,4}$/, '').trim();
     }
-    let mode = 'A';
-    if (/^txt@/i.test(text)) { mode = 'TXT'; text = text.replace(/^txt@/i, ''); }
-    else if (/^all@/i.test(text)) { mode = 'ALL'; text = text.replace(/^all@/i, ''); }
+
+    // TXT-only 是默认维护模式：
+    //   example.com       -> TXT
+    //   txt@example.com   -> TXT
+    //   all@example.com   -> TXT（避免误写 A）
+    // 只有显式设置 ENABLE_A_RECORDS=1 时，a@ / all@ 才会恢复旧的 A/ALL 维护能力。
+    let mode = 'TXT';
+    if (/^txt@/i.test(text)) {
+      mode = 'TXT'; text = text.replace(/^txt@/i, '');
+    } else if (/^all@/i.test(text)) {
+      mode = enableARecords ? 'ALL' : 'TXT'; text = text.replace(/^all@/i, '');
+    } else if (/^a@/i.test(text)) {
+      mode = enableARecords ? 'A' : 'TXT'; text = text.replace(/^a@/i, '');
+    }
+
     const parsed = parseHostPort(text, '443');
     const domain = normalizeDomain(parsed.host);
     return { id: index, mode, domain, port: String(parsed.port || '443'), minActive, raw: entry };
@@ -541,24 +569,38 @@ function parseTXTContent(content) {
 async function resolveTarget(input, config) {
   let raw = String(input || '').trim();
   let forceTxt = false;
+  let forceA = false;
   if (/^txt@/i.test(raw)) { forceTxt = true; raw = raw.replace(/^txt@/i, ''); }
+  else if (/^a@/i.test(raw)) { forceA = true; raw = raw.replace(/^a@/i, ''); }
+
   const { host, port } = parseHostPort(raw);
   if (!host) throw new Error('目标为空');
   if (isIPv4(host) || isIPv6(host)) return [formatHostPort(host, port)];
-  if (forceTxt) {
+
+  const readTxt = async () => {
     const txt = await dohQuery(host, 'TXT', config);
     const out = [];
     for (const record of txt.filter(x => x.type === 16)) out.push(...parseTXTContent(record.data));
-    if (!out.length) throw new Error('TXT 记录为空或无法解析');
     return unique(out);
+  };
+
+  // 默认 TXT 优先：让普通域名也能直接得到 TXT 内保存的 IP:PORT。
+  // 这样 CF_DOMAIN=pool.example.com 时，对外查询也能返回 121.153.133.83:30001 这类结果。
+  if (forceTxt || (!forceA && config.preferTxtResolve !== false)) {
+    const out = await readTxt();
+    if (out.length) return out;
+    if (forceTxt || config.allowAResolve === false) throw new Error('TXT 记录为空或无法解析');
   }
+
+  if (config.allowAResolve === false) throw new Error('未启用 A/AAAA 回退解析');
   const [a, aaaa] = await Promise.all([dohQuery(host, 'A', config), dohQuery(host, 'AAAA', config)]);
   const out = [];
   for (const r of a.filter(x => x.type === 1 && x.data)) out.push(formatHostPort(r.data, port));
   for (const r of aaaa.filter(x => x.type === 28 && x.data)) out.push(formatHostPort(r.data, port));
-  if (!out.length) throw new Error('域名无 A/AAAA 解析结果');
+  if (!out.length) throw new Error('域名无 TXT/A/AAAA 解析结果');
   return unique(out);
 }
+
 
 async function fetchCF(config, path, method = 'GET', body = null) {
   if (!config.apiKey || !config.zoneId) return { ok: false, status: 0, error: '缺少 CF_KEY 或 CF_ZONEID' };
@@ -829,7 +871,7 @@ async function getPoolCandidates(env, poolKey, target, config) {
   const needIPv4 = target.mode === 'A';
   for (const entry of entries) {
     if (out.length >= config.maxCheckPerDomain) break;
-    if (String(entry.port) !== String(target.port)) continue;
+    if ((target.mode === 'A' || (target.mode === 'TXT' && config.txtStrictPort)) && String(entry.port) !== String(target.port)) continue;
     if (needIPv4 && !isIPv4(entry.host)) continue;
     out.push(entry.addr);
   }
@@ -845,11 +887,12 @@ function addReportLog(report, message) {
   console.log(line);
 }
 async function collectReplacementCandidates(env, poolKey, target, need, activeAddrs, state, config, report) {
-  const existing = new Set(activeAddrs.map(v => parseHostPort(v).host));
-  const candidates = (await getPoolCandidates(env, poolKey, target, config)).filter(addr => !existing.has(parseHostPort(addr).host));
+  const existing = new Set(activeAddrs.map(v => target.mode === 'TXT' ? normalizeAddr(v) : parseHostPort(v).host));
+  const candidates = (await getPoolCandidates(env, poolKey, target, config)).filter(addr => !existing.has(target.mode === 'TXT' ? normalizeAddr(addr) : parseHostPort(addr).host));
   if (!candidates.length) {
     report.poolExhausted = true;
-    addReportLog(report, `⚠️ ${poolKey} 没有可用于 ${target.port} 端口的候选`);
+    const portHint = target.mode === 'TXT' && !config.txtStrictPort ? '任意端口' : `${target.port} 端口`;
+    addReportLog(report, `⚠️ ${poolKey} 没有可用于 ${portHint} 的候选`);
     return [];
   }
   const replacements = [];
@@ -1123,6 +1166,7 @@ function summarizeModeReport(target, reports) {
 }
 async function maintainTarget(env, target, mapping, state, config) {
   const poolKey = pickPoolKey(mapping, target.domain);
+  if (!config.enableARecords) return await maintainTXT(env, { ...target, mode: 'TXT' }, poolKey, state, config);
   if (target.mode === 'A') return await maintainA(env, target, poolKey, state, config);
   if (target.mode === 'TXT') return await maintainTXT(env, target, poolKey, state, config);
   const a = await maintainA(env, { ...target, mode: 'A' }, poolKey, state, config);
@@ -1222,7 +1266,7 @@ async function handleHealth(env, config) {
   return ok({ ok: true, version: VERSION, kv, kvBinding: binding.name, targets: config.targets.length, timestamp: nowISO() });
 }
 async function handleConfig(env, config) {
-  return ok({ version: VERSION, targets: config.targets, settings: { checkConcurrency: config.checkConcurrency, checkBatchSize: config.checkBatchSize, maxCheckPerDomain: config.maxCheckPerDomain, maintainMaxDomains: config.maintainMaxDomains, failThreshold: config.failThreshold, checkCacheEnabled: config.checkCacheEnabled, checkCacheTtlMinutes: config.checkCacheTtlMinutes, maxTxtTargets: config.maxTxtTargets, maxTxtContentLength: config.maxTxtContentLength, removeFailedImmediately: config.removeFailedImmediately, removeUnhealthyWithoutReplacement: config.removeUnhealthyWithoutReplacement }, authEnabled: !!config.authKey });
+  return ok({ version: VERSION, targets: config.targets, settings: { txtOnly: config.txtOnly, enableARecords: config.enableARecords, preferTxtResolve: config.preferTxtResolve, allowAResolve: config.allowAResolve, publicTxtEndpoint: config.publicTxtEndpoint, checkConcurrency: config.checkConcurrency, checkBatchSize: config.checkBatchSize, maxCheckPerDomain: config.maxCheckPerDomain, maintainMaxDomains: config.maintainMaxDomains, failThreshold: config.failThreshold, checkCacheEnabled: config.checkCacheEnabled, checkCacheTtlMinutes: config.checkCacheTtlMinutes, maxTxtTargets: config.maxTxtTargets, maxTxtContentLength: config.maxTxtContentLength, txtStrictPort: config.txtStrictPort, enableRemoteImport: config.enableRemoteImport, manualPoolOnly: !config.enableRemoteImport, removeFailedImmediately: config.removeFailedImmediately, removeUnhealthyWithoutReplacement: config.removeUnhealthyWithoutReplacement }, authEnabled: !!config.authKey });
 }
 async function handlePools(env) {
   const store = requireKV(env);
@@ -1340,25 +1384,29 @@ async function handleCheckBatch(request, config) {
 async function handleLookupDomain(url, config) {
   const domain = url.searchParams.get('domain') || '';
   if (!domain) return fail('MISSING_DOMAIN', '缺少 domain 参数');
-  if (/^txt@/i.test(domain)) return ok({ type: 'TXT', domain: domain.replace(/^txt@/i, ''), targets: await resolveTarget(domain, config) });
-  const { host, port } = parseHostPort(domain);
-  return ok({ type: 'A/AAAA', domain: host, port, targets: await resolveTarget(domain, config) });
+  const isTxt = /^txt@/i.test(domain) || config.preferTxtResolve !== false;
+  const normalized = domain.replace(/^txt@/i, '').replace(/^a@/i, '');
+  const { host, port } = parseHostPort(normalized);
+  return ok({ type: isTxt ? 'TXT优先' : 'A/AAAA', domain: host, port, targets: await resolveTarget(domain, config) });
 }
 async function handleDomainStatus(url, env, config) {
   const domain = normalizeDomain(url.searchParams.get('domain') || '');
   if (!domain) return fail('MISSING_DOMAIN', '缺少 domain 参数');
-  const [a, aaaa, txt] = await Promise.all([dohQuery(domain, 'A', config), dohQuery(domain, 'AAAA', config), dohQuery(domain, 'TXT', config)]);
+  const txt = await dohQuery(domain, 'TXT', config);
+  let a = [], aaaa = [];
+  if (config.enableARecords || url.searchParams.get('includeA') === '1') {
+    [a, aaaa] = await Promise.all([dohQuery(domain, 'A', config), dohQuery(domain, 'AAAA', config)]);
+  }
   let mapping = {}; try { mapping = await getMapping(env); } catch {}
-  return ok({ domain, A: a.filter(x => x.type === 1).map(x => x.data), AAAA: aaaa.filter(x => x.type === 28).map(x => x.data), TXT: txt.filter(x => x.type === 16).map(x => x.data), pool: mapping[domain] || '' });
+  return ok({ domain, A: a.filter(x => x.type === 1).map(x => x.data), AAAA: aaaa.filter(x => x.type === 28).map(x => x.data), TXT: txt.filter(x => x.type === 16).map(x => x.data), TXTTargets: txt.filter(x => x.type === 16).flatMap(x => parseTXTContent(x.data)), pool: mapping[domain] || '' });
 }
 async function handleCurrentStatus(url, config) {
   const idx = toInt(url.searchParams.get('target'), 0, 0, Math.max(0, config.targets.length - 1));
   const target = config.targets[idx];
   if (!target) return fail('NO_TARGET', '未配置目标域名');
-  const [a, txt] = await Promise.all([
-    target.mode !== 'TXT' ? cfListRecords(config, target.domain, 'A').catch(e => ({ error: e.message })) : [],
-    target.mode !== 'A' ? cfListRecords(config, target.domain, 'TXT').catch(e => ({ error: e.message })) : [],
-  ]);
+  const txt = await cfListRecords(config, target.domain, 'TXT').catch(e => ({ error: e.message }));
+  let a = [];
+  if (config.enableARecords && target.mode !== 'TXT') a = await cfListRecords(config, target.domain, 'A').catch(e => ({ error: e.message }));
   return ok({ target, A: a, TXT: txt });
 }
 async function handleMappingGet(env) { return ok({ mapping: await getMapping(env) }); }
@@ -1371,6 +1419,7 @@ async function handleMappingSave(request, env) {
   return ok({ mapping: normalized });
 }
 async function handleLoadRemote(request, config) {
+  if (!config.enableRemoteImport) return fail('REMOTE_IMPORT_DISABLED', '远程导入已关闭：当前版本按手动导入 IP 池设计，Cron 不会拉取远程源。', 403);
   const body = await readJson(request);
   if (!body?.url) return fail('MISSING_URL', '缺少 URL');
   let u; try { u = new URL(body.url); } catch { return fail('BAD_URL', 'URL 无效'); }
@@ -1456,13 +1505,13 @@ async function handleAddRecord(request, config) {
   const addr = normalizeAddr(body?.ip || '', target.port, { requireIp: true });
   if (!addr) return fail('MISSING_IP', '缺少有效 IP');
   const { host } = parseHostPort(addr);
-  if (target.mode === 'TXT') {
+  if (target.mode !== 'A' || !config.enableARecords) {
     const records = await cfListRecords(config, target.domain, 'TXT');
     const managed = managedTxtRecords(records);
     const primary = managed[0]?.record || null;
     const list = managed.length ? unique(managed.flatMap(x => x.addrs)) : [];
     if (!list.includes(addr)) list.push(addr);
-    const content = txtContentFromList(list);
+    const content = txtContentFromList(fitTxtList(list, config));
     const r = primary ? await cfUpdateRecord(config, primary.id, { type: 'TXT', name: target.domain, content }) : await cfCreateRecord(config, { type: 'TXT', name: target.domain, content });
     return r.ok ? ok({ added: addr, mode: 'TXT' }) : fail('CF_ERROR', cfError(r), 502, r);
   }
@@ -1477,6 +1526,29 @@ async function handleDeleteRecord(url, config) {
   return r.ok ? ok({ deleted: id }) : fail('CF_ERROR', cfError(r), 502, r);
 }
 async function handleMaintain(url, env, config) { return ok(await maintainAllDomains(env, url.searchParams.get('manual') === 'true', config)); }
+
+function plainText(text, status = 200, headers = {}) {
+  return new Response(String(text || ''), { status, headers: { 'Content-Type': 'text/plain; charset=UTF-8', 'Cache-Control': 'public, max-age=60', ...headers } });
+}
+async function handlePublicTxt(url, config) {
+  if (!config.publicTxtEndpoint) return fail('PUBLIC_TXT_DISABLED', '公开 TXT 输出未启用', 404);
+  let domain = normalizeDomain(url.searchParams.get('domain') || '');
+  const targetIdx = toInt(url.searchParams.get('target'), 0, 0, Math.max(0, config.targets.length - 1));
+  if (!domain) domain = config.targets[targetIdx]?.domain || '';
+  if (!domain) return plainText('', 404);
+
+  const configured = new Set(config.targets.map(t => t.domain));
+  if (!config.publicTxtAllowAny && !configured.has(domain)) return plainText('domain not allowed', 403);
+
+  let targets = [];
+  try { targets = await resolveTarget(`txt@${domain}`, config); }
+  catch { targets = []; }
+
+  const format = String(url.searchParams.get('format') || '').toLowerCase();
+  if (format === 'json') return json({ success: true, domain, targets, count: targets.length }, 200, { 'Cache-Control': 'public, max-age=60' });
+  if (format === 'csv') return plainText(targets.join(','));
+  return plainText(targets.join('\n'));
+}
 
 const ROUTES = {
   '/api/version': (url, req, env, config) => handleVersion(env, config),
@@ -1525,6 +1597,10 @@ export default {
     if (url.protocol === 'http:') return Response.redirect(url.href.replace(/^http:/, 'https:'), 301);
     if (url.pathname === '/favicon.ico') return new Response(null, { status: 204 });
     if (url.pathname === '/robots.txt') return new Response('User-agent: *\nDisallow: /\n', { headers: { 'Content-Type': 'text/plain; charset=UTF-8' } });
+
+    if (['/proxyip', '/txt', '/raw', '/pool.txt'].includes(url.pathname)) {
+      return await handlePublicTxt(url, config);
+    }
 
     // Worker 同源入口：前端静态文件部署在 GitHub Pages/Pages，Worker 只做轻量反代，不内嵌 HTML/CSS/JS。
     if (url.pathname === '/') return localRedirect('/admin/');
@@ -1577,6 +1653,7 @@ export default {
     return withCors(await handleApi(request, env, config), request, env, config);
   },
   async scheduled(event, env, ctx) {
+    // Cron 只维护 KV 中已有的手动 IP 池，并写回 TXT；不会自动拉取任何远程源。
     const config = createConfig(env);
     ctx.waitUntil(maintainAllDomains(env, false, config).catch(e => console.error('scheduled maintain failed', e)));
   }
