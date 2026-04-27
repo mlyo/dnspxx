@@ -3202,448 +3202,121 @@ function renderHTML(C, runtimeState = {}) {
         }
 
 
-        /* ===== 方案 A：极简列表风修正版 ===== */
+        /* ===== 方案 A：真实列表结构版 ===== */
         :root {
             --primary: #2563eb;
             --success: #16a34a;
             --danger: #dc2626;
-            --bg: #f8fafc;
+            --bg: #f6f8fb;
             --card: #ffffff;
             --text: #0f172a;
             --secondary: #64748b;
-            --line: #e5e7eb;
-            --line-soft: #f1f5f9;
+            --line: #e2e8f0;
+            --soft: #f8fafc;
         }
-        body {
-            background: var(--bg) !important;
-            color: var(--text) !important;
+        body { background: var(--bg) !important; color: var(--text) !important; }
+        .container { max-width: 1120px; padding-left: 14px; padding-right: 14px; }
+        .hero { padding: 18px 0 12px; }
+        .hero h1 { color: var(--text); font-size: 1.45rem; font-weight: 800; letter-spacing: -.03em; margin: 0 0 10px; }
+        .hero-actions { margin: 0 0 10px; }
+        .config-info, .usage-guide, .domain-selector select, .guide-toggle {
+            background: #fff; border: 1px solid var(--line); color: var(--secondary); box-shadow: none;
         }
-        .container {
-            max-width: 1120px !important;
+        .domain-selector select { min-height: 46px; border-radius: 14px; padding: 11px 14px; font-size: 15px; font-weight: 800; color: var(--text); }
+        .card { background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 4px 18px rgba(15,23,42,.05); }
+        .top-nav { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; padding: 5px; margin-bottom: 16px; background: #eef2f7; border: 1px solid var(--line); border-radius: 16px; }
+        .nav-tab { min-height: 42px; border: 0; background: transparent; color: #475569; border-radius: 12px; font-size: 15px; font-weight: 800; }
+        .nav-tab.active { background: #fff; color: var(--primary); box-shadow: 0 1px 4px rgba(15,23,42,.07); }
+        .form-control, .form-select, textarea.form-control {
+            min-height: 40px; border: 1px solid var(--line); background: var(--soft); border-radius: 12px; padding: 9px 12px; color: var(--text); box-shadow: none;
         }
-        .github-corner {
-            opacity: .18 !important;
+        .form-control:focus, .form-select:focus { background: #fff; border-color: #93c5fd; box-shadow: 0 0 0 3px rgba(37,99,235,.1); outline: none; }
+        .btn { min-height: 38px; padding: 8px 12px; border-radius: 12px; font-size: 13px; font-weight: 800; box-shadow: none; }
+        .btn:hover { transform: none; box-shadow: none; }
+        .btn-primary { background: #2563eb; border-color: #2563eb; }
+        .btn-info { background: #0ea5e9; border-color: #0ea5e9; color: #fff !important; }
+        .btn-success { background: #16a34a; border-color: #16a34a; }
+        .btn-dark { background: #0f172a; border-color: #0f172a; }
+        .btn-outline-primary, .btn-outline-secondary, .btn-outline-success, .btn-outline-danger { background: #fff; border-color: var(--line); }
+        #page-dashboard > .card.p-3 > .d-flex.justify-content-between.align-items-center.mb-3.flex-wrap.gap-2 {
+            display: grid !important; grid-template-columns: auto minmax(0, 1fr); gap: 12px !important; align-items: center !important;
         }
-        .card {
-            background: #fff !important;
-            border: 1px solid var(--line) !important;
-            border-radius: 16px !important;
-            box-shadow: 0 1px 2px rgba(15,23,42,.04) !important;
+        #page-dashboard > .card.p-3 > .d-flex.justify-content-between.align-items-center.mb-3.flex-wrap.gap-2 > .d-flex.gap-2.align-items-center.flex-grow-1 {
+            display: grid !important; grid-template-columns: minmax(0, 1fr) 70px 70px; gap: 8px !important; max-width: none !important; width: 100%;
         }
-        .form-control,
-        .form-select {
-            background: #fff !important;
-            border: 1px solid var(--line) !important;
-            border-radius: 12px !important;
-            color: var(--text) !important;
-            box-shadow: none !important;
+        #manual-add-section .input-group { display: grid !important; grid-template-columns: minmax(0, 1fr) 72px; gap: 8px; }
+        #manual-add-section .input-group > * { border-radius: 12px !important; width: 100%; min-width: 0; }
+        .status-list-wrap { border-top: 1px solid var(--line); margin-top: 12px; max-height: none !important; overflow: visible !important; }
+        .ip-list { width: 100%; }
+        .status-empty { padding: 18px 10px; text-align: center; color: var(--secondary); font-size: 14px; }
+        .status-empty.error { color: var(--danger); }
+        .ip-list-item { padding: 12px 0; border-bottom: 1px solid #edf2f7; }
+        .ip-list-item:last-child { border-bottom: 0; }
+        .ip-main-line { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: center; }
+        .ip-copy-target { min-width: 0; width: 100%; border: 0; padding: 0; background: transparent; color: var(--text); text-align: left; font-size: 15px; font-weight: 850; letter-spacing: -.02em; white-space: nowrap; overflow: visible; text-overflow: clip; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+        .ip-main-badges { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+        .latency-badge, .status-badge, .colo-badge {
+            display: inline-flex; align-items: center; justify-content: center; min-height: 24px; border-radius: 999px; padding: 3px 8px; font-size: 12px; line-height: 1; font-weight: 800;
         }
-        .form-control:focus,
-        .form-select:focus {
-            border-color: #93c5fd !important;
-            box-shadow: 0 0 0 3px rgba(37,99,235,.12) !important;
-        }
-        .btn {
-            border-radius: 12px !important;
-            font-weight: 700 !important;
-            box-shadow: none !important;
-        }
-        .btn:hover { transform: none !important; box-shadow: none !important; }
-        .btn-primary { background: #2563eb !important; border-color: #2563eb !important; }
-        .btn-success { background: #16a34a !important; border-color: #16a34a !important; }
-        .btn-info { background: #0ea5e9 !important; border-color: #0ea5e9 !important; color: #fff !important; }
-        .btn-dark { background: #0f172a !important; border-color: #0f172a !important; }
-        .btn-outline-primary, .btn-outline-secondary, .btn-outline-success, .btn-outline-danger {
-            background: #fff !important;
-            border-color: var(--line) !important;
-            color: #334155 !important;
-        }
-        .top-nav {
-            display: grid !important;
-            grid-template-columns: 1fr 1fr;
-            gap: 4px !important;
-            padding: 4px !important;
-            border: 1px solid var(--line) !important;
-            border-radius: 14px !important;
-            background: #f1f5f9 !important;
-            margin-bottom: 16px !important;
-        }
-        .nav-tab {
-            min-height: 40px !important;
-            padding: 8px 10px !important;
-            border: 0 !important;
-            border-radius: 10px !important;
-            background: transparent !important;
-            color: #475569 !important;
-            font-size: 14px !important;
-            font-weight: 800 !important;
-        }
-        .nav-tab.active {
-            background: #fff !important;
-            color: #2563eb !important;
-            box-shadow: 0 1px 2px rgba(15,23,42,.06) !important;
-        }
-        .latency-badge,
-        .status-badge,
-        .colo-badge,
-        .ip-info-tag {
-            display: inline-flex !important;
-            align-items: center !important;
-            justify-content: center !important;
-            min-height: 22px !important;
-            padding: 2px 8px !important;
-            border-radius: 999px !important;
-            font-size: 12px !important;
-            font-weight: 800 !important;
-            line-height: 1.2 !important;
-            white-space: nowrap !important;
-        }
-        .latency-badge { color: #1d4ed8 !important; background: #dbeafe !important; }
-        .status-badge.ok { color: #166534 !important; background: #dcfce7 !important; }
-        .status-badge.bad { color: #b91c1c !important; background: #fee2e2 !important; }
-        .colo-badge { color: #475569 !important; background: #e2e8f0 !important; }
-        .exit-stack { color: #6d28d9 !important; background: #f3e8ff !important; }
-        .exit-field { color: #0f766e !important; background: #ccfbf1 !important; }
-
+        .latency-badge { color: #1d4ed8; background: #dbeafe; }
+        .status-badge.ok { color: #166534; background: #dcfce7; }
+        .status-badge.bad { color: #b91c1c; background: #fee2e2; }
+        .colo-badge { color: #475569; background: #e2e8f0; }
+        .ip-action-mini { display: inline-flex; align-items: center; justify-content: center; min-width: 24px; }
+        .ip-action-mini a, .ip-action-mini button { font-size: 14px !important; padding: 0 !important; border: 0 !important; background: transparent !important; min-height: 24px !important; color: #dc2626 !important; }
+        .ip-sub-line { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 8px; padding-left: 12px; border-left: 2px solid #e2e8f0; color: var(--secondary); font-size: 12px; line-height: 1.6; }
+        .exit-stack-mini { color: #7c3aed; background: #f3e8ff; border-radius: 999px; padding: 1px 7px; font-size: 11px; font-weight: 800; }
+        .exit-ip-mini { color: #111827; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-weight: 700; }
+        .exit-meta-mini { color: #0f766e; background: #ccfbf1; border-radius: 999px; padding: 1px 7px; font-size: 11px; font-weight: 800; }
+        .exit-network-mini { color: #0f766e; background: #ccfbf1; border-radius: 999px; padding: 1px 7px; font-size: 11px; font-weight: 800; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .exit-sep-mini, .exit-empty-mini { color: var(--secondary); }
+        .ip-content-area > .d-flex.gap-2.mb-2.align-items-center { display: grid !important; grid-template-columns: minmax(0, 1fr) auto auto auto; gap: 8px !important; }
+        #main-actions { display: grid !important; grid-template-columns: 1fr 1fr auto; gap: 8px !important; }
+        .filter-line { display: grid !important; grid-template-columns: minmax(0,1fr) 34px auto auto auto; gap: 8px !important; align-items: center; }
+        .table th { color: #64748b; background: #f8fafc; border-bottom: 1px solid var(--line); }
+        .table td { border-top: 1px solid #eef2f7; color: var(--text); }
         @media (max-width: 768px) {
-            .container {
-                padding-left: 12px !important;
-                padding-right: 12px !important;
-            }
-            .hero {
-                padding: 12px 0 12px !important;
-            }
-            .hero h1,
-            .hero-actions,
-            #usage-guide {
-                display: none !important;
-            }
-            .domain-selector {
-                max-width: none !important;
-                margin: 0 !important;
-            }
-            .domain-selector select {
-                height: 44px !important;
-                padding: 0 36px 0 14px !important;
-                font-size: 15px !important;
-                font-weight: 800 !important;
-                border-radius: 12px !important;
-            }
-            .card.p-3,
-            .card.p-4 {
-                padding: 14px !important;
-            }
-            h6 {
-                font-size: 17px !important;
-                font-weight: 800 !important;
-            }
-            .btn {
-                min-height: 38px !important;
-                padding: 7px 12px !important;
-                font-size: 13px !important;
-                line-height: 1.2 !important;
-            }
-            .form-control,
-            .form-select {
-                min-height: 38px !important;
-                padding: 8px 10px !important;
-                font-size: 13px !important;
-            }
+            .container { padding-left: 12px; padding-right: 12px; }
+            .hero { padding: 14px 0 10px; }
+            .hero h1 { font-size: 1.28rem; }
+            .card.p-3, .card.p-4 { padding: 14px !important; }
+            #page-dashboard > .card.p-3 > .d-flex.justify-content-between.align-items-center.mb-3.flex-wrap.gap-2 { grid-template-columns: 1fr !important; }
+            #page-dashboard > .card.p-3 > .d-flex.justify-content-between.align-items-center.mb-3.flex-wrap.gap-2 > .d-flex.gap-2.align-items-center.flex-grow-1 { grid-template-columns: minmax(0,1fr) 58px 58px !important; }
+            #manual-add-section .input-group { grid-template-columns: minmax(0,1fr) 64px !important; }
+            .btn { min-height: 36px; padding: 7px 9px; font-size: 12px; }
+            .form-control, .form-select { min-height: 38px; padding: 8px 10px; font-size: 13px; }
+            .ip-list-item { padding: 11px 0; }
+            .ip-main-line { grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
+            .ip-copy-target { font-size: 13px; }
+            .ip-main-badges { gap: 5px; }
+            .latency-badge, .status-badge, .colo-badge { min-height: 22px; padding: 3px 7px; font-size: 11px; }
+            .ip-sub-line { margin-top: 7px; padding-left: 10px; font-size: 11px; gap: 5px; }
+            .exit-stack-mini, .exit-meta-mini, .exit-network-mini { font-size: 10px; padding: 1px 6px; }
+            .ip-content-area > .d-flex.gap-2.mb-2.align-items-center { grid-template-columns: repeat(3, minmax(0,1fr)) !important; }
+            .ip-content-area > .d-flex.gap-2.mb-2.align-items-center > #remote-url { grid-column: 1 / -1; }
+            #main-actions { grid-template-columns: 1fr 1fr !important; }
+            #main-actions .btn:last-child { grid-column: 1 / -1; }
 
-            /* 解析实况：工具区稳定两行，不挤压输入框 */
-            #page-dashboard > .card.p-3 > .d-flex.justify-content-between.align-items-center.mb-3.flex-wrap.gap-2 {
-                display: grid !important;
-                grid-template-columns: 1fr !important;
-                gap: 10px !important;
-                align-items: stretch !important;
-                margin-bottom: 10px !important;
-            }
-            #page-dashboard > .card.p-3 > .d-flex.justify-content-between.align-items-center.mb-3.flex-wrap.gap-2 > .d-flex.gap-2.align-items-center.flex-grow-1 {
-                display: grid !important;
-                grid-template-columns: minmax(0, 1fr) 58px 58px !important;
-                gap: 8px !important;
-                max-width: none !important;
-                width: 100% !important;
-            }
-            #lookup-domain {
-                min-width: 0 !important;
-                width: 100% !important;
-                overflow: hidden !important;
-                text-overflow: ellipsis !important;
-            }
-            #page-dashboard > .card.p-3 > .d-flex .btn-sm {
-                width: 58px !important;
-                min-width: 58px !important;
-                padding-left: 0 !important;
-                padding-right: 0 !important;
-            }
-            #manual-add-section {
-                margin-bottom: 12px !important;
-            }
-            #manual-add-section .input-group {
-                display: grid !important;
-                grid-template-columns: minmax(0, 1fr) 64px !important;
-                gap: 8px !important;
-                align-items: stretch !important;
-                width: 100% !important;
-            }
-            #manual-add-section .input-group > .form-control,
-            #manual-add-section .input-group > .btn {
-                width: 100% !important;
-                min-width: 0 !important;
-                border-radius: 12px !important;
-            }
-            #manual-add-ip {
-                min-width: 0 !important;
-                overflow: hidden !important;
-                text-overflow: ellipsis !important;
-            }
+            #domain-binding-list tr { display: grid !important; grid-template-columns: minmax(0, 1fr) 132px; align-items: center; border-bottom: 1px solid #eef2f7; }
+            #domain-binding-list td { display: block !important; width: 100% !important; border-top: 0 !important; padding: 10px 8px !important; min-width: 0; }
+            #domain-binding-list code { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; background: transparent; padding: 0; font-size: 13px; color: var(--text); }
+            #domain-binding-list .form-select { width: 100% !important; min-width: 0 !important; height: 36px; min-height: 36px; }
 
-            /* 状态列表：一主行 + 一辅行，完整 IP，不截断 */
-            #status-display {
-                max-height: none !important;
-                overflow: visible !important;
-                border: 0 !important;
-                background: transparent !important;
-                padding: 0 !important;
-            }
-            #status-display .table-responsive {
-                overflow: visible !important;
-                border: 1px solid var(--line) !important;
-                border-radius: 14px !important;
-                background: #fff !important;
-            }
-            .status-table,
-            .status-table tbody {
-                display: block !important;
-                width: 100% !important;
-                margin: 0 !important;
-            }
-            .status-table thead {
-                display: none !important;
-            }
-            .status-table tr {
-                display: grid !important;
-                grid-template-columns: minmax(132px, 1fr) auto auto auto 28px !important;
-                grid-template-areas:
-                    "ip delay stat colo act"
-                    "exit exit exit exit exit" !important;
-                column-gap: 8px !important;
-                row-gap: 7px !important;
-                align-items: center !important;
-                padding: 12px 10px !important;
-                border-bottom: 1px solid var(--line-soft) !important;
-                background: #fff !important;
-            }
-            .status-table tr:last-child {
-                border-bottom: 0 !important;
-            }
-            .status-table td {
-                display: block !important;
-                padding: 0 !important;
-                border: 0 !important;
-                background: transparent !important;
-                text-align: left !important;
-                min-width: 0 !important;
-                white-space: nowrap !important;
-            }
-            .status-table td:nth-child(1) {
-                grid-area: ip !important;
-                overflow: visible !important;
-                text-overflow: clip !important;
-                font-size: 15px !important;
-                line-height: 24px !important;
-                font-weight: 800 !important;
-                color: var(--text) !important;
-                font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace !important;
-            }
-            .status-table td:nth-child(2) { grid-area: delay !important; justify-self: end !important; }
-            .status-table td:nth-child(3) { grid-area: stat !important; justify-self: end !important; }
-            .status-table td:nth-child(5) { grid-area: colo !important; justify-self: end !important; }
-            .status-table td:nth-child(6) {
-                grid-area: act !important;
-                justify-self: end !important;
-                width: 28px !important;
-                min-width: 28px !important;
-                text-align: center !important;
-            }
-            .status-table td:nth-child(6) a,
-            .status-table td:nth-child(6) button {
-                display: inline-flex !important;
-                width: 28px !important;
-                height: 28px !important;
-                align-items: center !important;
-                justify-content: center !important;
-                padding: 0 !important;
-                border-radius: 8px !important;
-                font-size: 14px !important;
-            }
-            .status-table td:nth-child(4) {
-                grid-area: exit !important;
-                width: 100% !important;
-                max-width: none !important;
-                min-width: 0 !important;
-                overflow: visible !important;
-                white-space: normal !important;
-                padding-left: 8px !important;
-                border-left: 2px solid #e2e8f0 !important;
-            }
-            .exit-list-cell {
-                border-radius: 0 !important;
-                border-top: 0 !important;
-                background: transparent !important;
-            }
-            .exit-detail {
-                display: flex !important;
-                align-items: center !important;
-                gap: 6px !important;
-                flex-wrap: wrap !important;
-                min-height: 24px !important;
-                width: 100% !important;
-                min-width: 0 !important;
-                padding: 0 !important;
-                margin: 0 !important;
-                border: 0 !important;
-            }
-            .exit-ip {
-                display: inline-block !important;
-                color: #0f172a !important;
-                font-size: 13px !important;
-                font-weight: 700 !important;
-                line-height: 22px !important;
-                white-space: nowrap !important;
-                overflow: visible !important;
-                text-overflow: clip !important;
-                font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace !important;
-            }
-            .ip-info-tag {
-                min-height: 22px !important;
-                padding: 2px 7px !important;
-                font-size: 12px !important;
-            }
-            .latency-badge,
-            .status-badge,
-            .colo-badge {
-                min-width: 50px !important;
-            }
-
-            /* IP 库管理收口 */
-            .col-lg-7 > .card.p-4:first-child > .d-flex.justify-content-between.align-items-center.mb-3.flex-wrap.gap-2 {
-                display: grid !important;
-                grid-template-columns: 1fr !important;
-                gap: 8px !important;
-            }
-            .col-lg-7 > .card.p-4:first-child > .d-flex.justify-content-between.align-items-center.mb-3.flex-wrap.gap-2 > .d-flex.gap-1.align-items-center {
-                display: grid !important;
-                grid-template-columns: minmax(0, 1fr) 34px 34px 34px !important;
-                gap: 6px !important;
-                width: 100% !important;
-            }
-            #pool-selector {
-                width: 100% !important;
-            }
-            .ip-content-area > .d-flex.gap-2.mb-2.align-items-center {
-                display: grid !important;
-                grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
-                gap: 8px !important;
-            }
-            .ip-content-area > .d-flex.gap-2.mb-2.align-items-center > #remote-url {
-                grid-column: 1 / -1 !important;
-            }
-            #ip-input {
-                min-height: 132px !important;
-                font-size: 13px !important;
-                line-height: 1.5 !important;
-            }
-            .filter-line {
-                display: grid !important;
-                grid-template-columns: 1fr 36px 1fr 1fr 1fr !important;
-                gap: 6px !important;
-                align-items: center !important;
-            }
-            .filter-line #universal-filter {
-                grid-column: 1 / -1 !important;
-            }
-            #main-actions {
-                display: grid !important;
-                grid-template-columns: 1fr 1fr !important;
-                gap: 8px !important;
-            }
-            #main-actions .btn:last-child {
-                grid-column: 1 / -1 !important;
-            }
-
-            /* 域名池绑定：保持一行式 */
-            #domain-binding-list tr {
-                display: grid !important;
-                grid-template-columns: minmax(0, 1fr) 146px !important;
-                gap: 10px !important;
-                align-items: center !important;
-                border-bottom: 1px solid var(--line-soft) !important;
-            }
-            #domain-binding-list tr:last-child { border-bottom: 0 !important; }
-            #domain-binding-list td {
-                display: block !important;
-                padding: 10px 6px !important;
-                border: 0 !important;
-                min-width: 0 !important;
-            }
-            #domain-binding-list code {
-                display: block !important;
-                white-space: nowrap !important;
-                overflow: hidden !important;
-                text-overflow: ellipsis !important;
-                font-size: 13px !important;
-                color: #0f172a !important;
-            }
-            #domain-binding-list select {
-                width: 100% !important;
-                height: 36px !important;
-            }
-            #page-dashboard .table-responsive {
-                border-radius: 14px !important;
-            }
-            .console {
-                height: 220px !important;
-                font-size: 11px !important;
-                padding: 12px !important;
-            }
+            .filter-line { grid-template-columns: 1fr 1fr 1fr !important; }
+            .filter-line > #universal-filter { grid-column: 1 / -1; }
+            .filter-line > .filter-help-btn { width: 34px; justify-self: end; }
         }
-
         @media (max-width: 430px) {
-            .container { padding-left: 10px !important; padding-right: 10px !important; }
-            .card.p-3, .card.p-4 { padding: 12px !important; }
-            #page-dashboard > .card.p-3 > .d-flex.justify-content-between.align-items-center.mb-3.flex-wrap.gap-2 > .d-flex.gap-2.align-items-center.flex-grow-1 {
-                grid-template-columns: minmax(0, 1fr) 54px 54px !important;
-                gap: 6px !important;
-            }
-            #manual-add-section .input-group {
-                grid-template-columns: minmax(0, 1fr) 58px !important;
-                gap: 6px !important;
-            }
-            .status-table tr {
-                grid-template-columns: minmax(116px, 1fr) auto auto auto 24px !important;
-                column-gap: 6px !important;
-                padding: 10px 8px !important;
-            }
-            .status-table td:nth-child(1) {
-                font-size: 14px !important;
-            }
-            .latency-badge,
-            .status-badge,
-            .colo-badge {
-                min-width: 44px !important;
-                padding: 2px 6px !important;
-                font-size: 11px !important;
-            }
-            .ip-info-tag {
-                padding: 2px 6px !important;
-                font-size: 11px !important;
-            }
-            .exit-ip { font-size: 12px !important; }
-            #domain-binding-list tr {
-                grid-template-columns: minmax(0, 1fr) 134px !important;
-            }
+            .container { padding-left: 10px; padding-right: 10px; }
+            .hero h1 { font-size: 1.2rem; }
+            .domain-selector select { font-size: 14px; min-height: 42px; }
+            .nav-tab { min-height: 38px; font-size: 14px; }
+            .ip-copy-target { font-size: 12px; letter-spacing: -.04em; }
+            .ip-main-line { gap: 6px; }
+            .ip-main-badges { gap: 4px; }
+            .latency-badge, .status-badge, .colo-badge { padding: 2px 6px; font-size: 10px; }
+            .ip-action-mini { min-width: 20px; }
+            .ip-sub-line { font-size: 10px; }
         }
 
     </style>
@@ -3713,22 +3386,8 @@ function renderHTML(C, runtimeState = {}) {
         </div>
         
         <!-- 统一展示区域 -->
-        <div id="status-display" class="scroll-box" style="max-height:320px">
-            <div class="table-responsive">
-                <table class="table text-center mb-0 status-table">
-                    <thead style="position:sticky;top:0;background:#fff;z-index:1">
-                        <tr>
-                            <th>目标地址</th>
-                            <th>延迟</th>
-                            <th>状态</th>
-                            <th>出口IP / 线路</th>
-                            <th>Colo</th>
-                            <th>操作</th>
-                        </tr>
-                    </thead>
-                    <tbody id="status-table"></tbody>
-                </table>
-            </div>
+        <div id="status-display" class="status-list-wrap">
+            <div id="status-table" class="ip-list"></div>
             <div id="txt-status"></div>
         </div>
     </div>
@@ -3744,7 +3403,7 @@ function renderHTML(C, runtimeState = {}) {
                         <select id="pool-selector" class="form-select form-select-sm" style="width:120px;border-radius:8px" onchange="switchPool()">
                             <option value="pool">通用池</option>
                         </select>
-                        <button class="btn btn-sm" onclick="createNewPool()" title="新建池" style="padding:6px 8px">添加</button>
+                        <button class="btn btn-sm" onclick="createNewPool()" title="新建池" style="padding:6px 8px">➕</button>
                         <button class="btn btn-sm" onclick="deleteCurrentPool()" title="删除池" style="padding:6px 8px">🗑️</button>
                         <button class="btn btn-sm" onclick="oneClickClean()" title="一键洗库" style="padding:6px 8px">🧹</button>
                     </div>
@@ -4489,15 +4148,10 @@ function renderHTML(C, runtimeState = {}) {
 
     function formatIPInfo(ipInfo) {
         if (!ipInfo) return '';
-
-        let html = '';
-        if (ipInfo.country) {
-            html += \`<span class="ip-info-tag">\${escapeHTML(ipInfo.country)}</span>\`;
-        }
-        if (ipInfo.asn) {
-            html += \`<span class="ip-info-tag">\${escapeHTML(formatAsn(ipInfo.asn))}</span>\`;
-        }
-        return html;
+        const parts = [];
+        if (ipInfo.country) parts.push(escapeHTML(ipInfo.country));
+        if (ipInfo.asn) parts.push(escapeHTML(formatAsn(ipInfo.asn)));
+        return parts.join(' · ');
     }
 
     function formatAsn(asn) {
@@ -4506,23 +4160,45 @@ function renderHTML(C, runtimeState = {}) {
         return text.toUpperCase().startsWith('AS') ? text : 'AS' + text;
     }
 
-    function formatExitInfo(exits) {
-        if (!Array.isArray(exits) || exits.length === 0) return '';
-        const ordered = [...exits].sort((a, b) => {
-            const order = { ipv4: 0, v4: 0, ipv6: 1, v6: 1 };
-            return (order[String(a.stack || '').toLowerCase()] ?? 9) - (order[String(b.stack || '').toLowerCase()] ?? 9);
-        });
-        return ordered.map(exit => {
-            const stack = exit.stack ? exit.stack.toUpperCase() : 'EXIT';
-            const location = [exit.country, exit.city].filter(Boolean).join(' · ');
-            const network = [formatAsn(exit.asn), exit.asOrganization].filter(Boolean).join(' · ');
-            return \`<div class="exit-detail">
-                <span class="ip-info-tag exit-stack">\${escapeHTML(stack)}</span>
-                <span class="exit-ip copyable" onclick="copyText('\${escapeJSString(exit.ip || '')}', '出口IP')" title="点击复制出口IP">\${escapeHTML(exit.ip || '-')}</span>
-                <span class="ip-info-tag exit-field" title="\${escapeHTML(location || '-') }">\${escapeHTML(location || '-')}</span>
-                <span class="ip-info-tag exit-field" title="\${escapeHTML(network || '-') }">\${escapeHTML(network || '-')}</span>
-            </div>\`;
-        }).join('');
+    function formatExitLine(exits, ipInfo) {
+        if (Array.isArray(exits) && exits.length > 0) {
+            const ordered = [...exits].sort((a, b) => {
+                const order = { ipv4: 0, v4: 0, ipv6: 1, v6: 1 };
+                return (order[String(a.stack || '').toLowerCase()] ?? 9) - (order[String(b.stack || '').toLowerCase()] ?? 9);
+            });
+            return ordered.map(exit => {
+                const stack = exit.stack ? exit.stack.toUpperCase() : 'EXIT';
+                const location = [exit.country, exit.city].filter(Boolean).join(' / ');
+                const network = [formatAsn(exit.asn), exit.asOrganization].filter(Boolean).join(' ');
+                return '<span class="exit-stack-mini">' + escapeHTML(stack) + '</span>' +
+                    '<span class="exit-ip-mini copyable" onclick="copyText(\'' + escapeJSString(exit.ip || '') + '\', \'出口IP\')" title="点击复制出口IP">' + escapeHTML(exit.ip || '-') + '</span>' +
+                    (location ? '<span class="exit-meta-mini">' + escapeHTML(location) + '</span>' : '') +
+                    (network ? '<span class="exit-network-mini">' + escapeHTML(network) + '</span>' : '');
+            }).join('<span class="exit-sep-mini">/</span>');
+        }
+        const info = formatIPInfo(ipInfo);
+        return info ? '<span class="exit-meta-mini">' + info + '</span>' : '<span class="exit-empty-mini">无出口信息</span>';
+    }
+
+    function renderIPRow(r, actionHTML) {
+        const target = escapeHTML(r.ip || '-');
+        const latency = escapeHTML(formatLatencyValue(r.time));
+        const statusClass = r.success ? 'ok' : 'bad';
+        const statusText = r.success ? '可用' : '失败';
+        const colo = escapeHTML(r.colo || 'N/A');
+        const exitLine = formatExitLine(r.exits, r.ipInfo);
+        return '<div class="ip-list-item">' +
+            '<div class="ip-main-line">' +
+                '<button class="ip-copy-target copyable" onclick="copyText(\'' + escapeJSString(r.ip || '') + '\', \'维护地址\')" title="点击复制">' + target + '</button>' +
+                '<div class="ip-main-badges">' +
+                    '<span class="latency-badge" title="来自后端检测 API 返回的 responseTime，不是浏览器到节点的延迟">' + latency + '</span>' +
+                    '<span class="status-badge ' + statusClass + '">' + statusText + '</span>' +
+                    '<span class="colo-badge" title="Cloudflare 机房 / colo">' + colo + '</span>' +
+                    '<span class="ip-action-mini">' + actionHTML + '</span>' +
+                '</div>' +
+            '</div>' +
+            '<div class="ip-sub-line">' + exitLine + '</div>' +
+        '</div>';
     }
 
     function parseAddrParts(addr) {
@@ -4576,18 +4252,6 @@ function renderHTML(C, runtimeState = {}) {
     async function checkIPWithInfo(addr) {
         const r = await apiFetch(\`/api/check-ip?ip=\${encodeURIComponent(addr)}\`).then(r => r.json());
         return { ip: addr, success: r.success, colo: r.colo || 'N/A', time: r.responseTime || '-', exits: r.exits || [], proxyIP: r.proxyIP, portRemote: r.portRemote, ipInfo: r.ipInfo || null, asn: r.asn, country: r.country, stack: r.stack };
-    }
-
-    function renderIPRow(r, actionHTML) {
-        const infoHtml = formatExitInfo(r.exits) || (r.ipInfo ? formatIPInfo(r.ipInfo) : '-');
-        return \`<tr>
-            <td class="fw-bold copyable" onclick="copyText('\${escapeJSString(r.ip)}', '维护地址')" title="点击复制">\${escapeHTML(r.ip)}</td>
-            <td><span class="latency-badge" title="来自后端检测 API 返回的 responseTime，不是浏览器到节点的延迟">\${escapeHTML(formatLatencyValue(r.time))}</span></td>
-            <td><span class="status-badge \${r.success?'ok':'bad'}">\${r.success?'可用':'失败'}</span></td>
-            <td class="exit-list-cell">\${infoHtml}</td>
-            <td><span class="colo-badge" title="Cloudflare 机房 / colo">\${escapeHTML(r.colo || 'N/A')}</span></td>
-            <td>\${actionHTML}</td>
-        </tr>\`;
     }
 
     function switchDomain() {
@@ -4726,7 +4390,7 @@ function renderHTML(C, runtimeState = {}) {
         if (abortController) {
             abortController.abort();
             abortController = null;
-            btn.textContent = '检测清洗';
+            btn.textContent = '⚡ 检测清洗';
             btn.classList.remove('btn-danger');
             btn.classList.add('btn-warning');
             log('🛑 已停止检测', 'warn');
@@ -4890,7 +4554,7 @@ function renderHTML(C, runtimeState = {}) {
         } finally {
             abortController = null;
             updateFilterPreview();
-            btn.textContent = '检测清洗';
+            btn.textContent = '⚡ 检测清洗';
             btn.classList.remove('btn-danger');
             btn.classList.add('btn-warning');
             setTimeout(() => { pg.style.width = '0%'; }, 1000);
@@ -4980,14 +4644,14 @@ function renderHTML(C, runtimeState = {}) {
         const t = document.getElementById('status-table');
         const txtDiv = document.getElementById('txt-status');
             const colspan = '6';
-        t.innerHTML = \`<tr><td colspan="\${colspan}" class="text-secondary p-4">🔄 查询中...</td></tr>\`;
+        t.innerHTML = '<div class="status-empty">查询中...</div>';
         txtDiv.innerHTML = '';
         
         try {
             const data = await apiFetch(\`/api/current-status?target=\${currentTargetIndex}\`).then(r => r.json());
             
             if (data.error) {
-                t.innerHTML = \`<tr><td colspan="\${colspan}" class="text-danger p-4">❌ \${escapeHTML(data.error)}<br><small>请检查 CF_KEY, CF_ZONEID 配置</small></td></tr>\`;
+                t.innerHTML = '<div class="status-empty error">' + escapeHTML(data.error) + '<br><small>请检查 CF_KEY, CF_ZONEID 配置</small></div>';
                 return;
             }
 
@@ -5017,12 +4681,12 @@ function renderHTML(C, runtimeState = {}) {
             
             // 显示结果
             if (allRows.length === 0) {
-                t.innerHTML = \`<tr><td colspan="\${colspan}" class="text-secondary p-4">暂无记录</td></tr>\`;
+                t.innerHTML = '<div class="status-empty">暂无记录</div>';
             } else {
                 t.innerHTML = allRows.join('');
             }
         } catch (e) {
-            t.innerHTML = \`<tr><td colspan="\${colspan}" class="text-danger p-4">❌ 查询失败<br><small>请检查网络连接和CF配置</small></td></tr>\`;
+            t.innerHTML = '<div class="status-empty error">查询失败<br><small>请检查网络连接和CF配置</small></div>';
         }
     }
     
@@ -5073,7 +4737,7 @@ function renderHTML(C, runtimeState = {}) {
         const t = document.getElementById('status-table');
         const txtDiv = document.getElementById('txt-status');
         const colspan = '6';
-        t.innerHTML = \`<tr><td colspan="\${colspan}" class="text-secondary p-4">🔄 探测中...</td></tr>\`;
+        t.innerHTML = '<div class="status-empty">探测中...</div>';
         txtDiv.innerHTML = '';
         
         try {
@@ -5083,7 +4747,7 @@ function renderHTML(C, runtimeState = {}) {
                 // null 检查
                 if (!data.ips || !Array.isArray(data.ips)) {
                     log(\`❌ TXT 查询失败\`, 'error');
-                    t.innerHTML = \`<tr><td colspan="\${colspan}" class="text-danger p-4">❌ TXT 查询失败</td></tr>\`;
+                    t.innerHTML = '<div class="status-empty error">TXT 查询失败</div>';
                     return;
                 }
                 
@@ -5094,7 +4758,7 @@ function renderHTML(C, runtimeState = {}) {
 
                 // 显示在表格中（与地址记录探测统一模板）
                 t.innerHTML = checkResults.map(r => renderIPRow(r,
-                    \`<button class="btn btn-sm btn-outline-primary" onclick="addToInput('\${escapeHTML(buildPoolLineFromCheckResult(r.ip, r))}')" title="添加到输入框">添加</button>\`
+                    \`<button class="btn btn-sm btn-outline-primary" onclick="addToInput('\${escapeHTML(buildPoolLineFromCheckResult(r.ip, r))}')" title="添加到输入框">➕</button>\`
                 )).join('');
                 
                 const activeCount = checkResults.filter(r => r.success).length;
@@ -5113,7 +4777,7 @@ function renderHTML(C, runtimeState = {}) {
                 
                 if (!data.ips || !Array.isArray(data.ips) || data.ips.length === 0) {
                     log(\`⚠️ 域名无A/AAAA记录\`, 'warn');
-                    t.innerHTML = \`<tr><td colspan="\${colspan}" class="text-secondary p-4">域名无A/AAAA记录</td></tr>\`;
+                    t.innerHTML = '<div class="status-empty">域名无A/AAAA记录</div>';
                     return;
                 }
                 
@@ -5126,14 +4790,14 @@ function renderHTML(C, runtimeState = {}) {
 
             // 显示在表格中
             t.innerHTML = checkResults.map(r => renderIPRow(r,
-                \`<button class="btn btn-sm btn-outline-primary" onclick="addToInput('\${escapeHTML(buildPoolLineFromCheckResult(r.ip, r))}')" title="添加到输入框">添加</button>\`
+                \`<button class="btn btn-sm btn-outline-primary" onclick="addToInput('\${escapeHTML(buildPoolLineFromCheckResult(r.ip, r))}')" title="添加到输入框">➕</button>\`
             )).join('');
             
             const activeCount = checkResults.filter(r => r.success).length;
             log(\`📊 探测完成: \${activeCount}/\${targets.length} 活跃\`, activeCount === targets.length ? 'success' : (activeCount > 0 ? 'warn' : 'error'));
         } catch (e) {
             log(\`❌ 失败: \${e.message}\`, 'error');
-            t.innerHTML = \`<tr><td colspan="\${colspan}" class="text-danger p-4">❌ 探测失败</td></tr>\`;
+            t.innerHTML = '<div class="status-empty error">探测失败</div>';
         }
     }
     
