@@ -3952,6 +3952,242 @@ function renderHTML(C, runtimeState = {}) {
             }
         }
 
+
+
+        /* ===== 移动端紧凑行版修复：IP 一行 + 缩进详情 ===== */
+        @media (max-width: 768px) {
+            /* 解析实况：每个 IP 先以一行呈现，出口信息缩进到下一行 */
+            #status-display,
+            #status-display .table-responsive {
+                max-height: none !important;
+                overflow: visible !important;
+                border: 0 !important;
+                background: transparent !important;
+            }
+            .status-table,
+            .status-table tbody {
+                display: block !important;
+                width: 100% !important;
+            }
+            .status-table thead { display: none !important; }
+            .status-table tbody { padding: 0 !important; }
+            .status-table tr {
+                display: grid !important;
+                width: 100% !important;
+                grid-template-columns: minmax(0, 1fr) auto auto auto auto !important;
+                grid-template-areas:
+                    "ip latency state colo action"
+                    "exit exit exit exit exit" !important;
+                align-items: center !important;
+                column-gap: 6px !important;
+                row-gap: 0 !important;
+                margin: 0 0 8px !important;
+                padding: 10px 10px 9px !important;
+                border: 1px solid var(--line) !important;
+                border-radius: 14px !important;
+                background: #fff !important;
+                box-shadow: 0 2px 8px rgba(15, 23, 42, .035) !important;
+                overflow: hidden !important;
+            }
+            .status-table td {
+                display: flex !important;
+                align-items: center !important;
+                width: auto !important;
+                min-width: 0 !important;
+                padding: 0 !important;
+                border: 0 !important;
+                background: transparent !important;
+                text-align: left !important;
+                white-space: normal !important;
+            }
+            .status-table td::before { content: none !important; display: none !important; }
+            .status-table td:nth-child(1) {
+                grid-area: ip !important;
+                font-size: 14px !important;
+                font-weight: 800 !important;
+                line-height: 1.25 !important;
+                white-space: nowrap !important;
+                overflow: hidden !important;
+                text-overflow: ellipsis !important;
+                color: var(--text) !important;
+            }
+            .status-table td:nth-child(2) { grid-area: latency !important; }
+            .status-table td:nth-child(3) { grid-area: state !important; }
+            .status-table td:nth-child(5) { grid-area: colo !important; }
+            .status-table td:nth-child(6) {
+                grid-area: action !important;
+                justify-content: flex-end !important;
+            }
+            .status-table td:nth-child(4) {
+                grid-area: exit !important;
+                display: block !important;
+                width: 100% !important;
+                margin-top: 8px !important;
+                padding: 8px 0 0 14px !important;
+                border-top: 1px solid var(--line-soft) !important;
+            }
+            .status-table .latency-badge,
+            .status-table .status-badge,
+            .status-table .colo-badge {
+                width: auto !important;
+                min-width: 0 !important;
+                min-height: 22px !important;
+                padding: 3px 8px !important;
+                font-size: 10px !important;
+                line-height: 1.2 !important;
+                margin: 0 !important;
+                white-space: nowrap !important;
+            }
+            .status-table td:nth-child(6) a,
+            .status-table td:nth-child(6) button {
+                min-width: 0 !important;
+                min-height: 22px !important;
+                padding: 2px 6px !important;
+                font-size: 12px !important;
+                line-height: 1.2 !important;
+            }
+            .exit-list-cell {
+                min-width: 0 !important;
+                max-width: none !important;
+                overflow: visible !important;
+                background: transparent !important;
+                border: 0 !important;
+            }
+            .exit-detail {
+                display: flex !important;
+                flex-direction: row !important;
+                flex-wrap: wrap !important;
+                align-items: center !important;
+                width: 100% !important;
+                min-width: 0 !important;
+                gap: 5px !important;
+                margin: 0 0 5px !important;
+                padding: 0 !important;
+                border: 0 !important;
+            }
+            .exit-detail:last-child { margin-bottom: 0 !important; }
+            .exit-stack {
+                min-width: 0 !important;
+                writing-mode: horizontal-tb !important;
+                letter-spacing: normal !important;
+                white-space: nowrap !important;
+            }
+            .exit-ip {
+                flex: 0 1 auto !important;
+                min-width: 0 !important;
+                max-width: 140px !important;
+                font-size: 12px !important;
+                line-height: 1.25 !important;
+                white-space: nowrap !important;
+                overflow: hidden !important;
+                text-overflow: ellipsis !important;
+            }
+            .exit-field {
+                flex: 0 1 auto !important;
+                min-width: 0 !important;
+                max-width: 100% !important;
+                white-space: nowrap !important;
+                overflow: hidden !important;
+                text-overflow: ellipsis !important;
+            }
+            .ip-info-tag,
+            .exit-stack,
+            .exit-field {
+                min-height: 22px !important;
+                padding: 3px 7px !important;
+                font-size: 10px !important;
+                line-height: 1.2 !important;
+            }
+
+            /* 手动添加：恢复一行，不再掉成竖条 */
+            #manual-add-section .input-group {
+                display: grid !important;
+                grid-template-columns: minmax(0, 1fr) 64px !important;
+                gap: 8px !important;
+                width: 100% !important;
+            }
+            #manual-add-ip {
+                width: 100% !important;
+                min-width: 0 !important;
+            }
+
+            /* 域名池绑定：改成一行紧凑卡片，域名左、池右 */
+            #page-dashboard .card:nth-of-type(3) .table-responsive {
+                overflow: visible !important;
+                border: 0 !important;
+                background: transparent !important;
+            }
+            #domain-binding-list {
+                display: block !important;
+                width: 100% !important;
+            }
+            #domain-binding-list tr {
+                display: grid !important;
+                grid-template-columns: minmax(0, 1fr) minmax(130px, 42%) !important;
+                align-items: center !important;
+                gap: 10px !important;
+                width: 100% !important;
+                margin: 0 0 8px !important;
+                padding: 10px !important;
+                border: 1px solid var(--line) !important;
+                border-radius: 14px !important;
+                background: #fff !important;
+                box-shadow: 0 2px 8px rgba(15, 23, 42, .035) !important;
+            }
+            #domain-binding-list td {
+                display: block !important;
+                width: 100% !important;
+                min-width: 0 !important;
+                padding: 0 !important;
+                border: 0 !important;
+                background: transparent !important;
+            }
+            #domain-binding-list td::before { display: none !important; content: none !important; }
+            #domain-binding-list code {
+                display: block !important;
+                width: 100% !important;
+                white-space: nowrap !important;
+                overflow: hidden !important;
+                text-overflow: ellipsis !important;
+                font-size: 13px !important;
+                line-height: 1.2 !important;
+                background: transparent !important;
+                padding: 0 !important;
+            }
+            #domain-binding-list .form-select {
+                width: 100% !important;
+                min-width: 0 !important;
+                height: 34px !important;
+                min-height: 34px !important;
+                padding: 6px 28px 6px 9px !important;
+                font-size: 12px !important;
+            }
+        }
+        @media (max-width: 420px) {
+            .status-table tr {
+                grid-template-columns: minmax(0, 1fr) auto auto auto !important;
+                grid-template-areas:
+                    "ip ip ip action"
+                    "latency state colo action"
+                    "exit exit exit exit" !important;
+                row-gap: 7px !important;
+            }
+            .status-table td:nth-child(1) {
+                max-width: none !important;
+            }
+            .status-table td:nth-child(6) {
+                align-self: start !important;
+            }
+            .status-table td:nth-child(4) {
+                margin-top: 2px !important;
+                padding-left: 12px !important;
+            }
+            .exit-ip { max-width: 128px !important; }
+            #domain-binding-list tr {
+                grid-template-columns: minmax(0, 1fr) minmax(118px, 40%) !important;
+            }
+        }
+
     </style>
 </head>
 <body class="pb-5">
