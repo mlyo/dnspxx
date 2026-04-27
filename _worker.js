@@ -3202,121 +3202,177 @@ function renderHTML(C, runtimeState = {}) {
         }
 
 
-        /* ===== 方案 A：真实列表结构版 ===== */
-        :root {
-            --primary: #2563eb;
-            --success: #16a34a;
-            --danger: #dc2626;
-            --bg: #f6f8fb;
-            --card: #ffffff;
-            --text: #0f172a;
-            --secondary: #64748b;
-            --line: #e2e8f0;
-            --soft: #f8fafc;
-        }
-        body { background: var(--bg) !important; color: var(--text) !important; }
-        .container { max-width: 1120px; padding-left: 14px; padding-right: 14px; }
-        .hero { padding: 18px 0 12px; }
-        .hero h1 { color: var(--text); font-size: 1.45rem; font-weight: 800; letter-spacing: -.03em; margin: 0 0 10px; }
-        .hero-actions { margin: 0 0 10px; }
-        .config-info, .usage-guide, .domain-selector select, .guide-toggle {
-            background: #fff; border: 1px solid var(--line); color: var(--secondary); box-shadow: none;
-        }
-        .domain-selector select { min-height: 46px; border-radius: 14px; padding: 11px 14px; font-size: 15px; font-weight: 800; color: var(--text); }
-        .card { background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 4px 18px rgba(15,23,42,.05); }
-        .top-nav { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; padding: 5px; margin-bottom: 16px; background: #eef2f7; border: 1px solid var(--line); border-radius: 16px; }
-        .nav-tab { min-height: 42px; border: 0; background: transparent; color: #475569; border-radius: 12px; font-size: 15px; font-weight: 800; }
-        .nav-tab.active { background: #fff; color: var(--primary); box-shadow: 0 1px 4px rgba(15,23,42,.07); }
-        .form-control, .form-select, textarea.form-control {
-            min-height: 40px; border: 1px solid var(--line); background: var(--soft); border-radius: 12px; padding: 9px 12px; color: var(--text); box-shadow: none;
-        }
-        .form-control:focus, .form-select:focus { background: #fff; border-color: #93c5fd; box-shadow: 0 0 0 3px rgba(37,99,235,.1); outline: none; }
-        .btn { min-height: 38px; padding: 8px 12px; border-radius: 12px; font-size: 13px; font-weight: 800; box-shadow: none; }
-        .btn:hover { transform: none; box-shadow: none; }
-        .btn-primary { background: #2563eb; border-color: #2563eb; }
-        .btn-info { background: #0ea5e9; border-color: #0ea5e9; color: #fff !important; }
-        .btn-success { background: #16a34a; border-color: #16a34a; }
-        .btn-dark { background: #0f172a; border-color: #0f172a; }
-        .btn-outline-primary, .btn-outline-secondary, .btn-outline-success, .btn-outline-danger { background: #fff; border-color: var(--line); }
-        #page-dashboard > .card.p-3 > .d-flex.justify-content-between.align-items-center.mb-3.flex-wrap.gap-2 {
-            display: grid !important; grid-template-columns: auto minmax(0, 1fr); gap: 12px !important; align-items: center !important;
-        }
-        #page-dashboard > .card.p-3 > .d-flex.justify-content-between.align-items-center.mb-3.flex-wrap.gap-2 > .d-flex.gap-2.align-items-center.flex-grow-1 {
-            display: grid !important; grid-template-columns: minmax(0, 1fr) 70px 70px; gap: 8px !important; max-width: none !important; width: 100%;
-        }
-        #manual-add-section .input-group { display: grid !important; grid-template-columns: minmax(0, 1fr) 72px; gap: 8px; }
-        #manual-add-section .input-group > * { border-radius: 12px !important; width: 100%; min-width: 0; }
-        .status-list-wrap { border-top: 1px solid var(--line); margin-top: 12px; max-height: none !important; overflow: visible !important; }
-        .ip-list { width: 100%; }
-        .status-empty { padding: 18px 10px; text-align: center; color: var(--secondary); font-size: 14px; }
-        .status-empty.error { color: var(--danger); }
-        .ip-list-item { padding: 12px 0; border-bottom: 1px solid #edf2f7; }
-        .ip-list-item:last-child { border-bottom: 0; }
-        .ip-main-line { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: center; }
-        .ip-copy-target { min-width: 0; width: 100%; border: 0; padding: 0; background: transparent; color: var(--text); text-align: left; font-size: 15px; font-weight: 850; letter-spacing: -.02em; white-space: nowrap; overflow: visible; text-overflow: clip; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
-        .ip-main-badges { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
-        .latency-badge, .status-badge, .colo-badge {
-            display: inline-flex; align-items: center; justify-content: center; min-height: 24px; border-radius: 999px; padding: 3px 8px; font-size: 12px; line-height: 1; font-weight: 800;
-        }
-        .latency-badge { color: #1d4ed8; background: #dbeafe; }
-        .status-badge.ok { color: #166534; background: #dcfce7; }
-        .status-badge.bad { color: #b91c1c; background: #fee2e2; }
-        .colo-badge { color: #475569; background: #e2e8f0; }
-        .ip-action-mini { display: inline-flex; align-items: center; justify-content: center; min-width: 24px; }
-        .ip-action-mini a, .ip-action-mini button { font-size: 14px !important; padding: 0 !important; border: 0 !important; background: transparent !important; min-height: 24px !important; color: #dc2626 !important; }
-        .ip-sub-line { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 8px; padding-left: 12px; border-left: 2px solid #e2e8f0; color: var(--secondary); font-size: 12px; line-height: 1.6; }
-        .exit-stack-mini { color: #7c3aed; background: #f3e8ff; border-radius: 999px; padding: 1px 7px; font-size: 11px; font-weight: 800; }
-        .exit-ip-mini { color: #111827; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-weight: 700; }
-        .exit-meta-mini { color: #0f766e; background: #ccfbf1; border-radius: 999px; padding: 1px 7px; font-size: 11px; font-weight: 800; }
-        .exit-network-mini { color: #0f766e; background: #ccfbf1; border-radius: 999px; padding: 1px 7px; font-size: 11px; font-weight: 800; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-        .exit-sep-mini, .exit-empty-mini { color: var(--secondary); }
-        .ip-content-area > .d-flex.gap-2.mb-2.align-items-center { display: grid !important; grid-template-columns: minmax(0, 1fr) auto auto auto; gap: 8px !important; }
-        #main-actions { display: grid !important; grid-template-columns: 1fr 1fr auto; gap: 8px !important; }
-        .filter-line { display: grid !important; grid-template-columns: minmax(0,1fr) 34px auto auto auto; gap: 8px !important; align-items: center; }
-        .table th { color: #64748b; background: #f8fafc; border-bottom: 1px solid var(--line); }
-        .table td { border-top: 1px solid #eef2f7; color: var(--text); }
+        /* ===== 方案A：移动端独立列表结构 ===== */
+        #status-mobile-list { display: none; }
+        .mobile-action-wrap .btn { padding: 4px 8px; font-size: 12px; line-height: 1.2; border-radius: 8px; }
+        .mobile-action-wrap a { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: 8px; background: #fff1f2; }
         @media (max-width: 768px) {
+            body { background: #f8fafc; }
             .container { padding-left: 12px; padding-right: 12px; }
-            .hero { padding: 14px 0 10px; }
-            .hero h1 { font-size: 1.28rem; }
-            .card.p-3, .card.p-4 { padding: 14px !important; }
-            #page-dashboard > .card.p-3 > .d-flex.justify-content-between.align-items-center.mb-3.flex-wrap.gap-2 { grid-template-columns: 1fr !important; }
-            #page-dashboard > .card.p-3 > .d-flex.justify-content-between.align-items-center.mb-3.flex-wrap.gap-2 > .d-flex.gap-2.align-items-center.flex-grow-1 { grid-template-columns: minmax(0,1fr) 58px 58px !important; }
-            #manual-add-section .input-group { grid-template-columns: minmax(0,1fr) 64px !important; }
-            .btn { min-height: 36px; padding: 7px 9px; font-size: 12px; }
-            .form-control, .form-select { min-height: 38px; padding: 8px 10px; font-size: 13px; }
-            .ip-list-item { padding: 11px 0; }
-            .ip-main-line { grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
-            .ip-copy-target { font-size: 13px; }
-            .ip-main-badges { gap: 5px; }
-            .latency-badge, .status-badge, .colo-badge { min-height: 22px; padding: 3px 7px; font-size: 11px; }
-            .ip-sub-line { margin-top: 7px; padding-left: 10px; font-size: 11px; gap: 5px; }
-            .exit-stack-mini, .exit-meta-mini, .exit-network-mini { font-size: 10px; padding: 1px 6px; }
-            .ip-content-area > .d-flex.gap-2.mb-2.align-items-center { grid-template-columns: repeat(3, minmax(0,1fr)) !important; }
+            .hero { padding: 16px 0 12px; }
+            .hero h1 { font-size: 1.35rem; line-height: 1.25; margin-bottom: 10px; }
+            .hero-actions { gap: 8px; }
+            .config-info { flex: 1 1 100%; font-size: 11px; padding: 6px 9px; }
+            .domain-selector select { min-height: 42px; padding: 9px 12px; font-size: 13px; border-radius: 12px; }
+            .top-nav { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 12px; }
+            .nav-tab { width: 100%; min-height: 38px; padding: 8px 10px; border-radius: 10px; font-size: 13px; }
+            .card { border-radius: 16px; box-shadow: 0 1px 2px rgba(15,23,42,.05); }
+            .card.p-3, .card.p-4 { padding: 12px !important; }
+
+            #page-dashboard > .card.p-3 > .d-flex.justify-content-between.align-items-center.mb-3.flex-wrap.gap-2 {
+                display: grid !important;
+                grid-template-columns: 1fr;
+                gap: 10px !important;
+                margin-bottom: 10px !important;
+            }
+            #page-dashboard > .card.p-3 > .d-flex.justify-content-between.align-items-center.mb-3.flex-wrap.gap-2 > h6 {
+                font-size: 15px;
+            }
+            #page-dashboard > .card.p-3 > .d-flex.justify-content-between.align-items-center.mb-3.flex-wrap.gap-2 > .d-flex.gap-2.align-items-center.flex-grow-1 {
+                display: grid !important;
+                grid-template-columns: minmax(0, 1fr) 56px 56px;
+                gap: 6px !important;
+                max-width: none !important;
+                width: 100%;
+            }
+            #lookup-domain, #manual-add-ip { min-width: 0 !important; width: 100% !important; }
+            #page-dashboard .btn { min-height: 34px; padding: 6px 9px; font-size: 12px; border-radius: 9px; }
+            #manual-add-section { margin-bottom: 10px !important; }
+            #manual-add-section .input-group {
+                display: grid !important;
+                grid-template-columns: minmax(0, 1fr) 60px;
+                gap: 6px;
+                width: 100%;
+            }
+            #manual-add-section .input-group > .form-control,
+            #manual-add-section .input-group > .btn {
+                border-radius: 9px !important;
+            }
+            #manual-add-section .btn { width: 60px; padding-left: 0; padding-right: 0; }
+
+            #status-display { max-height: none !important; overflow: visible !important; border: 0; background: transparent; }
+            #status-display > .status-desktop-wrap { display: none !important; }
+            #status-mobile-list { display: block; }
+            .status-mobile-list {
+                border: 1px solid #e5e7eb;
+                border-radius: 14px;
+                overflow: hidden;
+                background: #fff;
+            }
+            .ip-mobile-item {
+                padding: 10px 10px 9px;
+                border-bottom: 1px solid #f1f5f9;
+                background: #fff;
+            }
+            .ip-mobile-item:last-child { border-bottom: 0; }
+            .ip-mobile-main {
+                display: grid;
+                grid-template-columns: minmax(0, 1fr) auto auto;
+                align-items: center;
+                gap: 6px;
+            }
+            .ip-mobile-address {
+                min-width: 0;
+                padding: 0;
+                border: 0;
+                background: transparent;
+                color: #111827;
+                font-family: 'SF Mono', Consolas, Monaco, monospace;
+                font-size: 13px;
+                font-weight: 700;
+                line-height: 1.35;
+                text-align: left;
+                white-space: nowrap;
+                overflow: visible;
+                text-overflow: clip;
+            }
+            .ip-mobile-badges {
+                display: inline-flex;
+                align-items: center;
+                justify-content: flex-end;
+                gap: 4px;
+                white-space: nowrap;
+            }
+            .ip-mobile-badges .latency-badge,
+            .ip-mobile-badges .status-badge,
+            .ip-mobile-badges .colo-badge {
+                display: inline-flex;
+                min-height: 20px;
+                align-items: center;
+                padding: 2px 6px;
+                font-size: 10px;
+                border-radius: 999px;
+                line-height: 1;
+            }
+            .ip-mobile-action { display: inline-flex; align-items: center; justify-content: flex-end; }
+            .ip-mobile-info { margin-top: 6px; padding-left: 0; }
+            .ip-mobile-subline {
+                display: flex;
+                align-items: center;
+                gap: 4px;
+                min-width: 0;
+                color: #64748b;
+                font-size: 11px;
+                line-height: 1.45;
+                white-space: nowrap;
+                overflow: hidden;
+            }
+            .ip-mobile-stack {
+                flex: 0 0 auto;
+                color: #475569;
+                font-weight: 700;
+                font-size: 10px;
+                padding: 1px 5px;
+                border-radius: 999px;
+                background: #f1f5f9;
+            }
+            .ip-mobile-dot { color: #cbd5e1; flex: 0 0 auto; }
+            .ip-mobile-subtext {
+                min-width: 0;
+                overflow: hidden;
+                text-overflow: ellipsis;
+            }
+            .ip-mobile-subtext.copyable { cursor: pointer; color: #334155; }
+            .status-mobile-empty {
+                padding: 18px 12px;
+                text-align: center;
+                color: #64748b;
+                font-size: 13px;
+                background: #fff;
+                border: 1px solid #e5e7eb;
+                border-radius: 14px;
+            }
+            .status-mobile-empty-error { color: #dc2626; background: #fff7f7; border-color: #fecaca; }
+
+            .col-lg-7 > .card.p-4:first-child > .d-flex.justify-content-between.align-items-center.mb-3.flex-wrap.gap-2 {
+                display: grid !important;
+                grid-template-columns: 1fr;
+                gap: 8px !important;
+            }
+            .col-lg-7 > .card.p-4:first-child > .d-flex.justify-content-between.align-items-center.mb-3.flex-wrap.gap-2 > .d-flex.gap-1.align-items-center {
+                display: grid !important;
+                grid-template-columns: minmax(0, 1fr) 34px 34px 34px;
+                gap: 6px !important;
+                width: 100%;
+            }
+            #pool-selector { width: 100% !important; }
+            .ip-content-area > .d-flex.gap-2.mb-2.align-items-center {
+                display: grid !important;
+                grid-template-columns: repeat(3, minmax(0, 1fr));
+                gap: 6px !important;
+            }
             .ip-content-area > .d-flex.gap-2.mb-2.align-items-center > #remote-url { grid-column: 1 / -1; }
-            #main-actions { grid-template-columns: 1fr 1fr !important; }
+            #main-actions { display: grid !important; grid-template-columns: 1fr 1fr; gap: 6px !important; }
             #main-actions .btn:last-child { grid-column: 1 / -1; }
-
-            #domain-binding-list tr { display: grid !important; grid-template-columns: minmax(0, 1fr) 132px; align-items: center; border-bottom: 1px solid #eef2f7; }
-            #domain-binding-list td { display: block !important; width: 100% !important; border-top: 0 !important; padding: 10px 8px !important; min-width: 0; }
-            #domain-binding-list code { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; background: transparent; padding: 0; font-size: 13px; color: var(--text); }
-            #domain-binding-list .form-select { width: 100% !important; min-width: 0 !important; height: 36px; min-height: 36px; }
-
-            .filter-line { grid-template-columns: 1fr 1fr 1fr !important; }
-            .filter-line > #universal-filter { grid-column: 1 / -1; }
-            .filter-line > .filter-help-btn { width: 34px; justify-self: end; }
+            .filter-line { grid-template-columns: minmax(0, 1fr) 34px !important; gap: 6px !important; }
+            .filter-line > .btn { margin-top: 6px; }
         }
-        @media (max-width: 430px) {
-            .container { padding-left: 10px; padding-right: 10px; }
-            .hero h1 { font-size: 1.2rem; }
-            .domain-selector select { font-size: 14px; min-height: 42px; }
-            .nav-tab { min-height: 38px; font-size: 14px; }
-            .ip-copy-target { font-size: 12px; letter-spacing: -.04em; }
-            .ip-main-line { gap: 6px; }
-            .ip-main-badges { gap: 4px; }
-            .latency-badge, .status-badge, .colo-badge { padding: 2px 6px; font-size: 10px; }
-            .ip-action-mini { min-width: 20px; }
-            .ip-sub-line { font-size: 10px; }
+        @media (max-width: 380px) {
+            .ip-mobile-main { grid-template-columns: minmax(0, 1fr) auto; }
+            .ip-mobile-badges { grid-column: 1 / -1; justify-content: flex-start; }
+            .ip-mobile-action { grid-column: 2; grid-row: 1; }
+            .ip-mobile-address { white-space: normal; word-break: break-all; }
+            #page-dashboard > .card.p-3 > .d-flex.justify-content-between.align-items-center.mb-3.flex-wrap.gap-2 > .d-flex.gap-2.align-items-center.flex-grow-1 { grid-template-columns: minmax(0, 1fr) 50px 50px; }
         }
 
     </style>
@@ -3386,8 +3442,23 @@ function renderHTML(C, runtimeState = {}) {
         </div>
         
         <!-- 统一展示区域 -->
-        <div id="status-display" class="status-list-wrap">
-            <div id="status-table" class="ip-list"></div>
+        <div id="status-display" class="scroll-box" style="max-height:320px">
+            <div class="table-responsive status-desktop-wrap">
+                <table class="table text-center mb-0 status-table">
+                    <thead style="position:sticky;top:0;background:#fff;z-index:1">
+                        <tr>
+                            <th>目标地址</th>
+                            <th>延迟</th>
+                            <th>状态</th>
+                            <th>出口IP / 线路</th>
+                            <th>Colo</th>
+                            <th>操作</th>
+                        </tr>
+                    </thead>
+                    <tbody id="status-table"></tbody>
+                </table>
+            </div>
+            <div id="status-mobile-list" class="status-mobile-list"></div>
             <div id="txt-status"></div>
         </div>
     </div>
@@ -3414,9 +3485,9 @@ function renderHTML(C, runtimeState = {}) {
                     <!-- 加载区 -->
                     <div class="d-flex gap-2 mb-2 align-items-center">
                         <input type="text" id="remote-url" class="form-control form-control-sm flex-grow-1" placeholder="远程TXT URL" style="border-radius:8px">
-                        <button class="btn btn-sm btn-outline-primary" onclick="loadRemoteUrl()" style="white-space:nowrap" title="从远程URL加载">加载</button>
-                        <button class="btn btn-sm btn-outline-secondary" onclick="loadCurrentPool()" title="加载当前池到输入框" style="white-space:nowrap">从库</button>
-                        <button class="btn btn-sm btn-outline-danger" onclick="clearInput()" title="清空输入框" style="white-space:nowrap">清空</button>
+                        <button class="btn btn-sm btn-outline-primary" onclick="loadRemoteUrl()" style="white-space:nowrap" title="从远程URL加载">🌐 加载</button>
+                        <button class="btn btn-sm btn-outline-secondary" onclick="loadCurrentPool()" title="加载当前池到输入框" style="white-space:nowrap">📂 从库</button>
+                        <button class="btn btn-sm btn-outline-danger" onclick="clearInput()" title="清空输入框" style="white-space:nowrap">🗑️ 清空</button>
                     </div>
                     
                     <!-- 输入区 -->
@@ -3443,8 +3514,8 @@ function renderHTML(C, runtimeState = {}) {
                 <div class="ip-actions-area mt-auto">
                     <!-- 主操作按钮 -->
                     <div class="d-flex gap-2" id="main-actions">
-                        <button id="btn-check" class="btn btn-primary flex-grow-1" onclick="batchCheck()" style="border-radius:10px">检测清洗</button>
-                        <button class="btn btn-success flex-grow-1" onclick="saveToCurrentPool('append')" style="border-radius:10px">保存入库</button>
+                        <button id="btn-check" class="btn btn-primary flex-grow-1" onclick="batchCheck()" style="border-radius:10px">⚡ 检测</button>
+                        <button class="btn btn-success flex-grow-1" onclick="saveToCurrentPool('append')" style="border-radius:10px">💾 入库</button>
                         <button class="btn btn-outline-secondary btn-sm" onclick="removeFromPool()" title="从库中移除输入框中的IP" style="border-radius:8px">从库中移除</button>
                     </div>
                     
@@ -3493,7 +3564,7 @@ function renderHTML(C, runtimeState = {}) {
                 <div class="progress mb-3" style="height:12px; background:#2c2c2e; border-radius:6px;">
                     <div id="pg-bar" class="progress-bar" style="width:0%; background:var(--success);"></div>
                 </div>
-                <button id="btn-maintain" class="btn btn-dark w-100" onclick="runMaintain()">执行全部维护</button>
+                <button id="btn-maintain" class="btn btn-dark w-100" onclick="runMaintain()">🔧 执行全部维护</button>
             </div>
         </div>
     </div>
@@ -4148,10 +4219,15 @@ function renderHTML(C, runtimeState = {}) {
 
     function formatIPInfo(ipInfo) {
         if (!ipInfo) return '';
-        const parts = [];
-        if (ipInfo.country) parts.push(escapeHTML(ipInfo.country));
-        if (ipInfo.asn) parts.push(escapeHTML(formatAsn(ipInfo.asn)));
-        return parts.join(' · ');
+
+        let html = '';
+        if (ipInfo.country) {
+            html += \`<span class="ip-info-tag">\${escapeHTML(ipInfo.country)}</span>\`;
+        }
+        if (ipInfo.asn) {
+            html += \`<span class="ip-info-tag">\${escapeHTML(formatAsn(ipInfo.asn))}</span>\`;
+        }
+        return html;
     }
 
     function formatAsn(asn) {
@@ -4160,45 +4236,23 @@ function renderHTML(C, runtimeState = {}) {
         return text.toUpperCase().startsWith('AS') ? text : 'AS' + text;
     }
 
-    function formatExitLine(exits, ipInfo) {
-        if (Array.isArray(exits) && exits.length > 0) {
-            const ordered = [...exits].sort((a, b) => {
-                const order = { ipv4: 0, v4: 0, ipv6: 1, v6: 1 };
-                return (order[String(a.stack || '').toLowerCase()] ?? 9) - (order[String(b.stack || '').toLowerCase()] ?? 9);
-            });
-            return ordered.map(exit => {
-                const stack = exit.stack ? exit.stack.toUpperCase() : 'EXIT';
-                const location = [exit.country, exit.city].filter(Boolean).join(' / ');
-                const network = [formatAsn(exit.asn), exit.asOrganization].filter(Boolean).join(' ');
-                return '<span class="exit-stack-mini">' + escapeHTML(stack) + '</span>' +
-                    '<span class="exit-ip-mini copyable" onclick="copyText(\'' + escapeJSString(exit.ip || '') + '\', \'出口IP\')" title="点击复制出口IP">' + escapeHTML(exit.ip || '-') + '</span>' +
-                    (location ? '<span class="exit-meta-mini">' + escapeHTML(location) + '</span>' : '') +
-                    (network ? '<span class="exit-network-mini">' + escapeHTML(network) + '</span>' : '');
-            }).join('<span class="exit-sep-mini">/</span>');
-        }
-        const info = formatIPInfo(ipInfo);
-        return info ? '<span class="exit-meta-mini">' + info + '</span>' : '<span class="exit-empty-mini">无出口信息</span>';
-    }
-
-    function renderIPRow(r, actionHTML) {
-        const target = escapeHTML(r.ip || '-');
-        const latency = escapeHTML(formatLatencyValue(r.time));
-        const statusClass = r.success ? 'ok' : 'bad';
-        const statusText = r.success ? '可用' : '失败';
-        const colo = escapeHTML(r.colo || 'N/A');
-        const exitLine = formatExitLine(r.exits, r.ipInfo);
-        return '<div class="ip-list-item">' +
-            '<div class="ip-main-line">' +
-                '<button class="ip-copy-target copyable" onclick="copyText(\'' + escapeJSString(r.ip || '') + '\', \'维护地址\')" title="点击复制">' + target + '</button>' +
-                '<div class="ip-main-badges">' +
-                    '<span class="latency-badge" title="来自后端检测 API 返回的 responseTime，不是浏览器到节点的延迟">' + latency + '</span>' +
-                    '<span class="status-badge ' + statusClass + '">' + statusText + '</span>' +
-                    '<span class="colo-badge" title="Cloudflare 机房 / colo">' + colo + '</span>' +
-                    '<span class="ip-action-mini">' + actionHTML + '</span>' +
-                '</div>' +
-            '</div>' +
-            '<div class="ip-sub-line">' + exitLine + '</div>' +
-        '</div>';
+    function formatExitInfo(exits) {
+        if (!Array.isArray(exits) || exits.length === 0) return '';
+        const ordered = [...exits].sort((a, b) => {
+            const order = { ipv4: 0, v4: 0, ipv6: 1, v6: 1 };
+            return (order[String(a.stack || '').toLowerCase()] ?? 9) - (order[String(b.stack || '').toLowerCase()] ?? 9);
+        });
+        return ordered.map(exit => {
+            const stack = exit.stack ? exit.stack.toUpperCase() : 'EXIT';
+            const location = [exit.country, exit.city].filter(Boolean).join(' · ');
+            const network = [formatAsn(exit.asn), exit.asOrganization].filter(Boolean).join(' · ');
+            return \`<div class="exit-detail">
+                <span class="ip-info-tag exit-stack">\${escapeHTML(stack)}</span>
+                <span class="exit-ip copyable" onclick="copyText('\${escapeJSString(exit.ip || '')}', '出口IP')" title="点击复制出口IP">\${escapeHTML(exit.ip || '-')}</span>
+                <span class="ip-info-tag exit-field" title="\${escapeHTML(location || '-') }">\${escapeHTML(location || '-')}</span>
+                <span class="ip-info-tag exit-field" title="\${escapeHTML(network || '-') }">\${escapeHTML(network || '-')}</span>
+            </div>\`;
+        }).join('');
     }
 
     function parseAddrParts(addr) {
@@ -4252,6 +4306,79 @@ function renderHTML(C, runtimeState = {}) {
     async function checkIPWithInfo(addr) {
         const r = await apiFetch(\`/api/check-ip?ip=\${encodeURIComponent(addr)}\`).then(r => r.json());
         return { ip: addr, success: r.success, colo: r.colo || 'N/A', time: r.responseTime || '-', exits: r.exits || [], proxyIP: r.proxyIP, portRemote: r.portRemote, ipInfo: r.ipInfo || null, asn: r.asn, country: r.country, stack: r.stack };
+    }
+
+    function renderIPRow(r, actionHTML) {
+        const infoHtml = formatExitInfo(r.exits) || (r.ipInfo ? formatIPInfo(r.ipInfo) : '-');
+        return \`<tr>
+            <td class="fw-bold copyable" onclick="copyText('\${escapeJSString(r.ip)}', '维护地址')" title="点击复制">\${escapeHTML(r.ip)}</td>
+            <td><span class="latency-badge" title="来自后端检测 API 返回的 responseTime，不是浏览器到节点的延迟">\${escapeHTML(formatLatencyValue(r.time))}</span></td>
+            <td><span class="status-badge \${r.success?'ok':'bad'}">\${r.success?'可用':'失败'}</span></td>
+            <td class="exit-list-cell">\${infoHtml}</td>
+            <td><span class="colo-badge" title="Cloudflare 机房 / colo">\${escapeHTML(r.colo || 'N/A')}</span></td>
+            <td>\${actionHTML}</td>
+        </tr>\`;
+    }
+
+
+    function getStatusMobileList() {
+        return document.getElementById('status-mobile-list');
+    }
+
+    function setStatusMobileMessage(message, type) {
+        const m = getStatusMobileList();
+        if (!m) return;
+        const cls = type ? ' status-mobile-empty-' + type : '';
+        m.innerHTML = '<div class="status-mobile-empty' + cls + '">' + escapeHTML(message || '') + '</div>';
+    }
+
+    function buildStatusActionLink(html) {
+        return '<span class="mobile-action-wrap">' + (html || '') + '</span>';
+    }
+
+    function formatExitMobileInfo(r) {
+        if (Array.isArray(r.exits) && r.exits.length > 0) {
+            const order = { ipv4: 0, v4: 0, ipv6: 1, v6: 1 };
+            const exits = [...r.exits].sort((a, b) => {
+                return (order[String(a.stack || '').toLowerCase()] ?? 9) - (order[String(b.stack || '').toLowerCase()] ?? 9);
+            });
+            return exits.map(exit => {
+                const stack = exit.stack ? String(exit.stack).toUpperCase() : 'EXIT';
+                const location = [exit.country, exit.city].filter(Boolean).join(' / ');
+                const network = [formatAsn(exit.asn), exit.asOrganization].filter(Boolean).join(' ');
+                const ip = exit.ip || '-';
+                const parts = [stack, ip, location || '-', network || '-'];
+                return '<div class="ip-mobile-subline">' + parts.map((item, idx) => {
+                    const cls = idx === 0 ? 'ip-mobile-stack' : 'ip-mobile-subtext';
+                    const copy = idx === 1 ? ' copyable' : '';
+                    const attr = idx === 1 ? ' onclick="copyText(\\'' + escapeJSString(ip) + '\\', \\'出口IP\\')" title="点击复制出口IP"' : '';
+                    return '<span class="' + cls + copy + '"' + attr + '>' + escapeHTML(item) + '</span>';
+                }).join('<span class="ip-mobile-dot">·</span>') + '</div>';
+            }).join('');
+        }
+        if (r.ipInfo) {
+            const parts = ['IP信息'];
+            if (r.ipInfo.country) parts.push(r.ipInfo.country);
+            if (r.ipInfo.asn) parts.push(formatAsn(r.ipInfo.asn));
+            return '<div class="ip-mobile-subline muted">' + parts.map(item => '<span class="ip-mobile-subtext">' + escapeHTML(item) + '</span>').join('<span class="ip-mobile-dot">·</span>') + '</div>';
+        }
+        return '<div class="ip-mobile-subline muted"><span class="ip-mobile-subtext">无出口信息</span></div>';
+    }
+
+    function renderIPMobileItem(r, actionHTML) {
+        const stateClass = r.success ? 'ok' : 'bad';
+        return '<div class="ip-mobile-item">'
+            + '<div class="ip-mobile-main">'
+            + '<button type="button" class="ip-mobile-address copyable" onclick="copyText(\\'' + escapeJSString(r.ip) + '\\', \\'维护地址\\')" title="点击复制">' + escapeHTML(r.ip) + '</button>'
+            + '<div class="ip-mobile-badges">'
+            + '<span class="latency-badge">' + escapeHTML(formatLatencyValue(r.time)) + '</span>'
+            + '<span class="status-badge ' + stateClass + '">' + (r.success ? '可用' : '失败') + '</span>'
+            + '<span class="colo-badge">' + escapeHTML(r.colo || 'N/A') + '</span>'
+            + '</div>'
+            + '<div class="ip-mobile-action">' + buildStatusActionLink(actionHTML) + '</div>'
+            + '</div>'
+            + '<div class="ip-mobile-info">' + formatExitMobileInfo(r) + '</div>'
+            + '</div>';
     }
 
     function switchDomain() {
@@ -4643,50 +4770,52 @@ function renderHTML(C, runtimeState = {}) {
     async function refreshStatus() {
         const t = document.getElementById('status-table');
         const txtDiv = document.getElementById('txt-status');
-            const colspan = '6';
-        t.innerHTML = '<div class="status-empty">查询中...</div>';
+        const m = getStatusMobileList();
+        const colspan = '6';
+        t.innerHTML = '<tr><td colspan="' + colspan + '" class="text-secondary p-4">🔄 查询中...</td></tr>';
+        if (m) setStatusMobileMessage('查询中...', 'loading');
         txtDiv.innerHTML = '';
         
         try {
-            const data = await apiFetch(\`/api/current-status?target=\${currentTargetIndex}\`).then(r => r.json());
+            const data = await apiFetch('/api/current-status?target=' + currentTargetIndex).then(r => r.json());
             
             if (data.error) {
-                t.innerHTML = '<div class="status-empty error">' + escapeHTML(data.error) + '<br><small>请检查 CF_KEY, CF_ZONEID 配置</small></div>';
+                t.innerHTML = '<tr><td colspan="' + colspan + '" class="text-danger p-4">❌ ' + escapeHTML(data.error) + '<br><small>请检查 CF_KEY, CF_ZONEID 配置</small></td></tr>';
+                setStatusMobileMessage(data.error + '，请检查 CF_KEY, CF_ZONEID 配置', 'error');
                 return;
             }
 
-            // 统一收集所有记录到表格中显示
             let allRows = [];
+            let mobileRows = [];
 
-            // 地址记录
             if (data.mode === 'A' && data.aRecords && data.aRecords.length > 0) {
                 data.aRecords.forEach(r => {
-                    allRows.push(renderIPRow(
-                        { ip: r.address || (r.ip + ':' + r.port), colo: r.colo, time: r.time, success: r.success, exits: r.exits, proxyIP: r.proxyIP, portRemote: r.portRemote, ipInfo: r.ipInfo },
-                        \`<a href="javascript:deleteRecord('\${escapeJSString(r.id)}')" class="text-danger text-decoration-none small fw-bold">🗑️</a>\`
-                    ));
+                    const item = { ip: r.address || (r.ip + ':' + r.port), colo: r.colo, time: r.time, success: r.success, exits: r.exits, proxyIP: r.proxyIP, portRemote: r.portRemote, ipInfo: r.ipInfo };
+                    const action = '<a href="javascript:deleteRecord(\\'' + escapeJSString(r.id) + '\\')" class="text-danger text-decoration-none small fw-bold" title="删除">🗑️</a>';
+                    allRows.push(renderIPRow(item, action));
+                    mobileRows.push(renderIPMobileItem(item, action));
                 });
             }
 
-            // TXT记录（统一显示在表格中）
             if (data.mode === 'TXT' && data.txtRecords && data.txtRecords.length > 0) {
                 const record = data.txtRecords[0];
                 record.ips.forEach(ip => {
-                    allRows.push(renderIPRow(
-                        ip,
-                        \`<a href="javascript:deleteTxtIP('\${escapeJSString(record.id)}', '\${escapeJSString(ip.ip)}')" class="text-danger text-decoration-none small fw-bold">🗑️</a>\`
-                    ));
+                    const action = '<a href="javascript:deleteTxtIP(\\'' + escapeJSString(record.id) + '\\', \\'' + escapeJSString(ip.ip) + '\\')" class="text-danger text-decoration-none small fw-bold" title="删除">🗑️</a>';
+                    allRows.push(renderIPRow(ip, action));
+                    mobileRows.push(renderIPMobileItem(ip, action));
                 });
             }
             
-            // 显示结果
             if (allRows.length === 0) {
-                t.innerHTML = '<div class="status-empty">暂无记录</div>';
+                t.innerHTML = '<tr><td colspan="' + colspan + '" class="text-secondary p-4">暂无记录</td></tr>';
+                setStatusMobileMessage('暂无记录', 'empty');
             } else {
                 t.innerHTML = allRows.join('');
+                if (m) m.innerHTML = mobileRows.join('');
             }
         } catch (e) {
-            t.innerHTML = '<div class="status-empty error">查询失败<br><small>请检查网络连接和CF配置</small></div>';
+            t.innerHTML = '<tr><td colspan="' + colspan + '" class="text-danger p-4">❌ 查询失败<br><small>请检查网络连接和CF配置</small></td></tr>';
+            setStatusMobileMessage('查询失败，请检查网络连接和 CF 配置', 'error');
         }
     }
     
@@ -4732,72 +4861,83 @@ function renderHTML(C, runtimeState = {}) {
             return;
         }
         
-        log(\`🔍 探测: \${val}\`, 'info');
+        log('🔍 探测: ' + val, 'info');
         
         const t = document.getElementById('status-table');
         const txtDiv = document.getElementById('txt-status');
+        const m = getStatusMobileList();
         const colspan = '6';
-        t.innerHTML = '<div class="status-empty">探测中...</div>';
+        t.innerHTML = '<tr><td colspan="' + colspan + '" class="text-secondary p-4">🔄 探测中...</td></tr>';
+        if (m) setStatusMobileMessage('探测中...', 'loading');
         txtDiv.innerHTML = '';
         
         try {
             if (val.startsWith('txt@')) {
-                const data = await apiFetch(\`/api/lookup-domain?domain=\${encodeURIComponent(val)}\`).then(r => r.json());
+                const data = await apiFetch('/api/lookup-domain?domain=' + encodeURIComponent(val)).then(r => r.json());
                 
-                // null 检查
                 if (!data.ips || !Array.isArray(data.ips)) {
-                    log(\`❌ TXT 查询失败\`, 'error');
-                    t.innerHTML = '<div class="status-empty error">TXT 查询失败</div>';
+                    log('❌ TXT 查询失败', 'error');
+                    t.innerHTML = '<tr><td colspan="' + colspan + '" class="text-danger p-4">❌ TXT 查询失败</td></tr>';
+                    setStatusMobileMessage('TXT 查询失败', 'error');
                     return;
                 }
                 
-                log(\`📝 TXT: \${data.ips.length} 个IP\`, 'success');
-                
-                // 并发检测（与地址记录探测统一模板）
+                log('📝 TXT: ' + data.ips.length + ' 个IP', 'success');
                 const checkResults = await Promise.all(data.ips.map(ip => checkIPWithInfo(ip)));
-
-                // 显示在表格中（与地址记录探测统一模板）
-                t.innerHTML = checkResults.map(r => renderIPRow(r,
-                    \`<button class="btn btn-sm btn-outline-primary" onclick="addToInput('\${escapeHTML(buildPoolLineFromCheckResult(r.ip, r))}')" title="添加到输入框">➕</button>\`
-                )).join('');
+                const desktopRows = [];
+                const mobileRows = [];
+                checkResults.forEach(r => {
+                    const line = buildPoolLineFromCheckResult(r.ip, r);
+                    const action = '<button class="btn btn-sm btn-outline-primary" onclick="addToInput(\\'' + escapeJSString(line) + '\\')" title="添加到输入框">添加</button>';
+                    desktopRows.push(renderIPRow(r, action));
+                    mobileRows.push(renderIPMobileItem(r, action));
+                });
+                t.innerHTML = desktopRows.join('');
+                if (m) m.innerHTML = mobileRows.join('');
                 
                 const activeCount = checkResults.filter(r => r.success).length;
-                log(\`📊 探测完成: \${activeCount}/\${data.ips.length} 活跃\`, activeCount === data.ips.length ? 'success' : (activeCount > 0 ? 'warn' : 'error'));
+                log('📊 探测完成: ' + activeCount + '/' + data.ips.length + ' 活跃', activeCount === data.ips.length ? 'success' : (activeCount > 0 ? 'warn' : 'error'));
                 return;
             }
             
-            const isIP = /^\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}(:\\d+)?$/.test(val) || /^\\[[0-9a-fA-F:]+\\](:\\d+)?$/.test(val) || (/^[0-9a-fA-F:]+$/.test(val) && val.includes(':'));
+            const isIP = /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}(:\d+)?$/.test(val) || /^\[[0-9a-fA-F:]+\](:\d+)?$/.test(val) || (/^[0-9a-fA-F:]+$/.test(val) && val.includes(':'));
             let targets = [];
             
             if (isIP) {
                 const normalized = normalizeIPFormat(val);
                 targets = [normalized ? getPoolEntryKey(normalized) : val];
             } else {
-                const data = await apiFetch(\`/api/lookup-domain?domain=\${encodeURIComponent(val)}\`).then(r => r.json());
+                const data = await apiFetch('/api/lookup-domain?domain=' + encodeURIComponent(val)).then(r => r.json());
                 
                 if (!data.ips || !Array.isArray(data.ips) || data.ips.length === 0) {
-                    log(\`⚠️ 域名无A/AAAA记录\`, 'warn');
-                    t.innerHTML = '<div class="status-empty">域名无A/AAAA记录</div>';
+                    log('⚠️ 域名无A/AAAA记录', 'warn');
+                    t.innerHTML = '<tr><td colspan="' + colspan + '" class="text-secondary p-4">域名无A/AAAA记录</td></tr>';
+                    setStatusMobileMessage('域名无 A/AAAA 记录', 'empty');
                     return;
                 }
                 
-                targets = data.ips.map(ip => ip.includes(':') ? \`[\${ip.replace(/^\\[/, '').replace(/\\]$/, '')}]:\${data.port || '443'}\` : \`\${ip}:\${data.port || '443'}\`);
-                log(\`📡 \${data.ips.length} 个IP (端口: \${data.port || '443'})\`, 'success');
+                targets = data.ips.map(ip => ip.includes(':') ? '[' + ip.replace(/^\[/, '').replace(/\]$/, '') + ']:' + (data.port || '443') : ip + ':' + (data.port || '443'));
+                log('📡 ' + data.ips.length + ' 个IP (端口: ' + (data.port || '443') + ')', 'success');
             }
             
-            // 并发检测
             const checkResults = await Promise.all(targets.map(addr => checkIPWithInfo(addr)));
-
-            // 显示在表格中
-            t.innerHTML = checkResults.map(r => renderIPRow(r,
-                \`<button class="btn btn-sm btn-outline-primary" onclick="addToInput('\${escapeHTML(buildPoolLineFromCheckResult(r.ip, r))}')" title="添加到输入框">➕</button>\`
-            )).join('');
+            const desktopRows = [];
+            const mobileRows = [];
+            checkResults.forEach(r => {
+                const line = buildPoolLineFromCheckResult(r.ip, r);
+                const action = '<button class="btn btn-sm btn-outline-primary" onclick="addToInput(\\'' + escapeJSString(line) + '\\')" title="添加到输入框">添加</button>';
+                desktopRows.push(renderIPRow(r, action));
+                mobileRows.push(renderIPMobileItem(r, action));
+            });
+            t.innerHTML = desktopRows.join('');
+            if (m) m.innerHTML = mobileRows.join('');
             
             const activeCount = checkResults.filter(r => r.success).length;
-            log(\`📊 探测完成: \${activeCount}/\${targets.length} 活跃\`, activeCount === targets.length ? 'success' : (activeCount > 0 ? 'warn' : 'error'));
+            log('📊 探测完成: ' + activeCount + '/' + targets.length + ' 活跃', activeCount === targets.length ? 'success' : (activeCount > 0 ? 'warn' : 'error'));
         } catch (e) {
-            log(\`❌ 失败: \${e.message}\`, 'error');
-            t.innerHTML = '<div class="status-empty error">探测失败</div>';
+            log('❌ 失败: ' + e.message, 'error');
+            t.innerHTML = '<tr><td colspan="' + colspan + '" class="text-danger p-4">❌ 探测失败</td></tr>';
+            setStatusMobileMessage('探测失败', 'error');
         }
     }
     
