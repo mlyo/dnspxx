@@ -3,11 +3,12 @@
  * Frontend is deployed as remote static assets; Worker serves it through same-origin proxy.
  */
 
-const VERSION = '29.0.0-source-tag-country';
+const VERSION = '27.1.0-hardening-resource-guard';
 const JSON_TYPE = 'application/json; charset=UTF-8';
 const CHECK_CACHE_KEY = 'check_cache_v2';
 const CHECK_FAIL_KEY = 'check_fail_v2';
 const MAINTAIN_CURSOR_KEY = 'maintain_cursor_v2';
+const MAINTAIN_LOCK_KEY = 'maintain_lock_v2';
 
 const DEFAULTS = Object.freeze({
   checkApi: 'https://cf.090227.xyz/check?proxyip=',
@@ -22,20 +23,19 @@ const DEFAULTS = Object.freeze({
   dohTimeout: 5000,
   cfTimeout: 10000,
   remoteTimeout: 8000,
-  maxCheckPerDomain: 40,
-  checkBatchSize: 2,
-  maintainMaxDomains: 5,
+  maxCheckPerDomain: 20,
+  checkBatchSize: 5,
+  maintainMaxDomains: 2,
   maxPoolLines: 5000,
   maxRemoteBytes: 1024 * 1024,
   maxTrashSize: 1000,
   failThreshold: 3,
-  sourceMaxCandidates: 500,
-  sourceImportLimit: 80,
-  sourceTargetPerCountry: 30,
-  sourceDefaultPort: 443,
+  checkCacheEnabled: true,
+  checkCacheTtlMinutes: 420,
+  maxTxtContentLength: 240,
+  maxTxtTargets: 12,
+  maintainLockTtlSeconds: 300,
 });
-
-const SOURCE_REFRESH_KEY = 'source_refresh_v1';
 
 const SYSTEM_POOLS = new Set(['pool', 'pool_trash']);
 const MODE_LABELS = { A: 'A记录', TXT: 'TXT记录', ALL: 'A+TXT' };
@@ -71,57 +71,6 @@ function safeJSONParse(value, fallback) {
 
 async function readJson(request) {
   try { return await request.json(); } catch { return null; }
-}
-
-
-function splitSourceUrls(raw) {
-  return String(raw || '')
-    .split(/[\r\n,;]+/)
-    .map(s => s.trim())
-    .filter(Boolean);
-}
-
-function normalizeCountry(value) {
-  return String(value || '').trim().toUpperCase().replace(/[^A-Z0-9_-]/g, '').slice(0, 16);
-}
-
-function parseSourceRules(env) {
-  const rules = [];
-  const pushRule = (rule, fallbackId = '') => {
-    const urls = Array.isArray(rule?.urls) ? rule.urls : splitSourceUrls(rule?.url || rule?.urls || '');
-    const cleanUrls = urls.map(u => String(u || '').trim()).filter(Boolean);
-    if (!cleanUrls.length) return;
-    const country = normalizeCountry(rule?.country || rule?.region || '');
-    const id = String(rule?.id || rule?.name || fallbackId || country || `source_${rules.length + 1}`).trim();
-    rules.push({
-      id,
-      country,
-      pool: String(rule?.pool || '').trim(),
-      urls: cleanUrls,
-    });
-  };
-
-  const jsonRules = safeJSONParse(envText(env, 'SOURCE_RULES'), null);
-  if (Array.isArray(jsonRules)) jsonRules.forEach((rule, idx) => pushRule(rule, `json_${idx + 1}`));
-
-  const allUrls = splitSourceUrls(envText(env, 'SOURCE_URLS'));
-  if (allUrls.length) pushRule({ id: 'all', urls: allUrls }, 'all');
-
-  for (const [key, value] of Object.entries(env || {})) {
-    const m = key.match(/^SOURCE_URLS_([A-Z0-9_-]{2,16})$/i);
-    if (!m || typeof value !== 'string') continue;
-    const country = normalizeCountry(m[1]);
-    const pool = envText(env, `SOURCE_POOL_${country}`);
-    pushRule({ id: country.toLowerCase(), country, pool, urls: splitSourceUrls(value) }, country.toLowerCase());
-  }
-
-  const seen = new Set();
-  return rules.filter(rule => {
-    const key = `${rule.id}|${rule.country}|${rule.urls.join(',')}`;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
 }
 
 async function fetchWithTimeout(url, options = {}, timeout = 8000) {
@@ -169,19 +118,16 @@ function createConfig(env, request = null) {
     removeFailedImmediately: toBool(env?.REMOVE_FAILED_IMMEDIATELY, false),
     removeUnhealthyWithoutReplacement: toBool(env?.REMOVE_UNHEALTHY_WITHOUT_REPLACEMENT, false),
     deleteEmptyTxt: toBool(env?.DELETE_EMPTY_TXT, false),
-    checkCacheEnabled: toBool(env?.CHECK_CACHE_ENABLED, false),
-    checkCacheTtlMinutes: toInt(env?.CHECK_CACHE_TTL_MINUTES, 360, 1, 10080),
+    checkCacheEnabled: toBool(env?.CHECK_CACHE_ENABLED, DEFAULTS.checkCacheEnabled),
+    checkCacheTtlMinutes: toInt(env?.CHECK_CACHE_TTL_MINUTES, DEFAULTS.checkCacheTtlMinutes, 1, 10080),
+    maxTxtContentLength: toInt(env?.MAX_TXT_CONTENT_LENGTH, DEFAULTS.maxTxtContentLength, 80, 1024),
+    maxTxtTargets: toInt(env?.MAX_TXT_TARGETS, DEFAULTS.maxTxtTargets, 1, 200),
+    maintainLockTtlSeconds: toInt(env?.MAINTAIN_LOCK_TTL_SECONDS, DEFAULTS.maintainLockTtlSeconds, 60, 1800),
     ipInfoEnabled: toBool(env?.IP_INFO_ENABLED, false),
     ipInfoApi: envText(env, 'IP_INFO_API', 'http://ip-api.com/json'),
     allowedOrigins: envText(env, 'ALLOWED_ORIGINS'),
     targets: parseTargets(envText(env, 'CF_DOMAIN'), toInt(env?.DEFAULT_MIN_ACTIVE, DEFAULTS.defaultMinActive, 1, 200)),
     projectUrl: request ? new URL(request.url).origin : '',
-    sourceRules: parseSourceRules(env),
-    sourceMaxCandidates: toInt(env?.SOURCE_MAX_CANDIDATES, DEFAULTS.sourceMaxCandidates, 1, 5000),
-    sourceImportLimit: toInt(env?.SOURCE_IMPORT_LIMIT, DEFAULTS.sourceImportLimit, 1, 1000),
-    sourceTargetPerCountry: toInt(env?.SOURCE_TARGET_PER_COUNTRY, DEFAULTS.sourceTargetPerCountry, 1, 500),
-    sourceDefaultPort: String(toInt(env?.SOURCE_DEFAULT_PORT, DEFAULTS.sourceDefaultPort, 1, 65535)),
-    sourceAutoRefresh: toBool(env?.SOURCE_AUTO_REFRESH, false),
   };
   return Object.freeze(config);
 }
@@ -223,6 +169,7 @@ function corsPreflight(request, env, config) {
   const origin = getCorsOrigin(request, env, config);
   if (origin) {
     headers.set('Access-Control-Allow-Origin', origin);
+    if (origin !== '*') headers.set('Access-Control-Allow-Credentials', 'true');
     headers.set('Vary', 'Origin');
   }
   headers.set('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
@@ -235,6 +182,7 @@ function withCors(response, request, env, config) {
   if (!origin) return response;
   const headers = new Headers(response.headers);
   headers.set('Access-Control-Allow-Origin', origin);
+  if (origin !== '*') headers.set('Access-Control-Allow-Credentials', 'true');
   headers.set('Vary', 'Origin');
   headers.set('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
   headers.set('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Auth-Key');
@@ -439,47 +387,83 @@ function stripBrackets(host) {
   const h = String(host || '').trim();
   return h.startsWith('[') && h.endsWith(']') ? h.slice(1, -1) : h;
 }
+function isValidPortValue(port) {
+  const n = Number(port);
+  return Number.isInteger(n) && n >= 1 && n <= 65535;
+}
 function isIPv4(host) {
   const parts = String(host || '').split('.');
   return parts.length === 4 && parts.every(p => /^\d{1,3}$/.test(p) && Number(p) >= 0 && Number(p) <= 255);
 }
 function isIPv6(host) {
+  const h = stripBrackets(host).toLowerCase();
+  if (!h || !/^[0-9a-f:.]+$/.test(h) || (h.match(/::/g) || []).length > 1) return false;
+  const hasCompress = h.includes('::');
+  const parts = h.split('::');
+  const left = parts[0] ? parts[0].split(':') : [];
+  const right = parts[1] ? parts[1].split(':') : [];
+  const groups = [...left, ...right];
+  if (groups.some(g => !g || !/^[0-9a-f]{1,4}$/.test(g))) return false;
+  const groupCount = groups.length;
+  return hasCompress ? groupCount < 8 : groupCount === 8;
+}
+function isIpHost(host) {
   const h = stripBrackets(host);
-  return /^[0-9a-fA-F:]+$/.test(h) && h.includes(':');
+  return isIPv4(h) || isIPv6(h);
+}
+function isValidHostname(host) {
+  const h = normalizeDomain(host);
+  if (!h || h.length > 253 || h.includes('..') || h.includes(':') || /\s/.test(h)) return false;
+  if (/^(?:\d+\.){3}\d+$/.test(h)) return false;
+  return h.split('.').every(label => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i.test(label));
 }
 function formatHostPort(host, port = '443') {
   const h = stripBrackets(host);
-  return isIPv6(h) ? `[${h}]:${port}` : `${h}:${port}`;
+  const p = isValidPortValue(port) ? String(Math.floor(Number(port))) : '443';
+  if (!h) return '';
+  return isIPv6(h) ? `[${h}]:${p}` : `${h}:${p}`;
 }
 function parseHostPort(input, defaultPort = '443') {
   let text = String(input || '').split('#')[0].trim();
-  if (!text) return { host: '', port: String(defaultPort) };
+  const fallbackPort = isValidPortValue(defaultPort) ? String(Math.floor(Number(defaultPort))) : '443';
+  if (!text) return { host: '', port: fallbackPort };
   if (/^https?:\/\//i.test(text)) {
     try {
       const u = new URL(text);
-      return { host: u.hostname, port: u.port || String(defaultPort) };
-    } catch {}
+      return { host: stripBrackets(u.hostname), port: isValidPortValue(u.port || fallbackPort) ? String(u.port || fallbackPort) : fallbackPort };
+    } catch { return { host: '', port: fallbackPort }; }
   }
-  let port = String(defaultPort);
+  let port = fallbackPort;
   if (text.startsWith('[')) {
-    const idx = text.lastIndexOf(']:');
-    if (idx !== -1) {
-      const p = Number(text.slice(idx + 2));
-      if (Number.isInteger(p) && p >= 1 && p <= 65535) { port = String(p); text = text.slice(0, idx + 1); }
+    const end = text.indexOf(']');
+    if (end <= 0) return { host: '', port };
+    const host = text.slice(1, end);
+    const rest = text.slice(end + 1).trim();
+    if (rest) {
+      if (!rest.startsWith(':') || !isValidPortValue(rest.slice(1))) return { host: '', port };
+      port = String(Math.floor(Number(rest.slice(1))));
     }
-    return { host: stripBrackets(text), port };
+    return { host, port };
   }
   const colonCount = (text.match(/:/g) || []).length;
   if (colonCount === 1) {
     const idx = text.lastIndexOf(':');
-    const p = Number(text.slice(idx + 1));
-    if (Number.isInteger(p) && p >= 1 && p <= 65535) { port = String(p); text = text.slice(0, idx); }
+    const tail = text.slice(idx + 1);
+    if (!isValidPortValue(tail)) return { host: '', port };
+    port = String(Math.floor(Number(tail)));
+    text = text.slice(0, idx);
+  } else if (colonCount > 1 && !isIPv6(text)) {
+    return { host: '', port };
   }
   return { host: stripBrackets(text), port };
 }
-function normalizeAddr(input, defaultPort = '443') {
+function normalizeAddr(input, defaultPort = '443', options = {}) {
   const p = parseHostPort(input, defaultPort);
-  return p.host ? formatHostPort(p.host, p.port) : '';
+  const host = stripBrackets(p.host);
+  if (!host) return '';
+  if (options.requireIp && !isIpHost(host)) return '';
+  if (!isIpHost(host) && !isValidHostname(host)) return '';
+  return formatHostPort(host, p.port);
 }
 function extractAddr(line) {
   return String(line || '').split('#')[0].trim();
@@ -504,7 +488,7 @@ function parsePool(raw) {
   const entries = [];
   for (const line of String(raw || '').split(/\r?\n/)) {
     const { main, comment } = splitComment(line);
-    const addr = normalizeAddr(main);
+    const addr = normalizeAddr(main, '443', { requireIp: true });
     if (!addr || seen.has(addr)) continue;
     seen.add(addr);
     const { host, port } = parseHostPort(addr);
@@ -516,7 +500,7 @@ function serializePool(entries) {
   const seen = new Set();
   const lines = [];
   for (const entry of entries || []) {
-    const addr = normalizeAddr(entry.addr || entry.line || entry);
+    const addr = normalizeAddr(entry.addr || entry.line || entry, '443', { requireIp: true });
     if (!addr || seen.has(addr)) continue;
     seen.add(addr);
     const comment = entry.comment ? ` ${String(entry.comment).trim().startsWith('#') ? entry.comment.trim() : '#' + entry.comment.trim()}` : '';
@@ -525,7 +509,7 @@ function serializePool(entries) {
   return lines.join('\n');
 }
 function normalizeInputList(value) {
-  const arr = Array.isArray(value) ? value : String(value || '').split(/[\r\n,]+/);
+  const arr = Array.isArray(value) ? value : String(value || '').split(/[\r\n,;]+/);
   return unique(arr.map(v => String(v || '').split('#')[0].trim()).filter(Boolean));
 }
 
@@ -542,11 +526,17 @@ async function dohQuery(name, type, config) {
 }
 function normalizeTxtValue(value) {
   let s = String(value ?? '').trim();
-  if (s.startsWith('"') && s.endsWith('"')) s = s.slice(1, -1);
-  return s.replace(/\\"/g, '"');
+  if (!s) return '';
+  const quoted = [];
+  const re = /"((?:\\.|[^"])*)"/g;
+  let m;
+  while ((m = re.exec(s))) quoted.push(m[1].replace(/\\"/g, '"'));
+  if (quoted.length && quoted.join('').length >= s.replace(/["\s]/g, '').length * 0.5) s = quoted.join('');
+  else if (s.startsWith('"') && s.endsWith('"')) s = s.slice(1, -1);
+  return s.replace(/\\"/g, '"').trim();
 }
 function parseTXTContent(content) {
-  return unique(normalizeTxtValue(content).split(',').map(v => normalizeAddr(v)).filter(Boolean));
+  return unique(normalizeTxtValue(content).split(/[,，\s]+/).map(v => normalizeAddr(v, '443', { requireIp: true })).filter(Boolean));
 }
 async function resolveTarget(input, config) {
   let raw = String(input || '').trim();
@@ -583,7 +573,7 @@ async function fetchCF(config, path, method = 'GET', body = null) {
     let data = safeJSONParse(text, null);
     if (!data) data = { success: res.ok, raw: text };
     const cfOk = res.ok && data.success !== false;
-    return { ok: cfOk, status: res.status, result: data.result, errors: data.errors || [], messages: data.messages || [], raw: data };
+    return { ok: cfOk, status: res.status, result: data.result, resultInfo: data.result_info || data.resultInfo || null, errors: data.errors || [], messages: data.messages || [], raw: data };
   } catch (e) {
     return { ok: false, status: 0, error: e.message || 'Cloudflare API 请求失败' };
   }
@@ -595,10 +585,18 @@ function cfError(r) {
   return `HTTP ${r.status || 0}`;
 }
 async function cfListRecords(config, domain, type) {
-  const q = `/zones/${config.zoneId}/dns_records?name=${encodeURIComponent(domain)}&type=${encodeURIComponent(type)}&per_page=100`;
-  const r = await fetchCF(config, q);
-  if (!r.ok) throw new Error(cfError(r));
-  return Array.isArray(r.result) ? r.result : [];
+  const out = [];
+  const perPage = 100;
+  const maxPages = 5;
+  for (let page = 1; page <= maxPages; page++) {
+    const q = `/zones/${config.zoneId}/dns_records?name=${encodeURIComponent(domain)}&type=${encodeURIComponent(type)}&per_page=${perPage}&page=${page}`;
+    const r = await fetchCF(config, q);
+    if (!r.ok) throw new Error(cfError(r));
+    if (Array.isArray(r.result)) out.push(...r.result);
+    const totalPages = Number(r.resultInfo?.total_pages || r.resultInfo?.totalPages || 1);
+    if (!totalPages || page >= totalPages || r.result?.length < perPage) break;
+  }
+  return out;
 }
 async function cfCreateRecord(config, record) {
   const body = { ttl: config.dnsTtl, proxied: config.proxied, ...record };
@@ -623,19 +621,22 @@ function pickRows(raw) {
   return [];
 }
 function normalizeCheckRow(row, candidate, source, ms = 0) {
-  const probe = row?.probe_results || {};
-  const exit = probe.ipv4?.exit || probe.ipv6?.exit || {};
+  const probe = row?.probe_results || row?.probeResults || {};
+  const ipv4Ok = Boolean(row?.supports_ipv4 ?? row?.supportsIPv4 ?? probe.ipv4?.ok);
+  const ipv6Ok = Boolean(row?.supports_ipv6 ?? row?.supportsIPv6 ?? probe.ipv6?.ok);
+  const exit = probe.ipv4?.exit || probe.ipv6?.exit || row?.exit || {};
+  const success = Boolean(row?.success === true || row?.ok === true || row?.status === 'success' || ipv4Ok || ipv6Ok);
   return {
-    candidate,
-    success: row?.success === true,
+    candidate: normalizeAddr(candidate),
+    success,
     source,
-    colo: String(row?.colo || row?.checkColo || exit.colo || ''),
-    responseTime: Number(row?.responseTime || row?.time || ms || 0),
+    colo: String(row?.colo || row?.checkColo || row?.cfColo || exit.colo || ''),
+    responseTime: Number(row?.responseTime ?? row?.time ?? row?.ms ?? row?.latency ?? ms ?? 0),
     proxyIP: String(row?.proxyIP || row?.proxyip || candidate || ''),
-    message: String(row?.message || row?.error || ''),
+    message: String(row?.message || row?.error || (success ? 'OK' : '检测未通过')),
     exitIP: String(exit.ip || row?.ip || ''),
-    country: String(exit.country || row?.country || ''),
-    city: String(exit.city || row?.city || ''),
+    country: String(exit.country || row?.country || exit.countryCode || ''),
+    city: String(exit.city || row?.city || exit.region || exit.regionCode || ''),
     asn: exit.asn ?? row?.asn ?? null,
     org: String(exit.asOrganization || exit.org || row?.asOrganization || row?.org || ''),
     raw: row || null,
@@ -645,9 +646,12 @@ function buildCheckUrl(apiUrl, targets, token = '') {
   const base = String(apiUrl || '').trim();
   if (!base) return '';
   const joined = targets.map(v => normalizeAddr(v)).filter(Boolean).join(',');
-  const sep = base.includes('?') && !/[?&]proxyip=$/i.test(base) ? (base.endsWith('&') || base.endsWith('?') ? '' : '&') : '';
-  let url = base.endsWith('=') ? base + encodeURIComponent(joined) : base + sep + 'proxyip=' + encodeURIComponent(joined);
-  if (token) url += (url.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(token);
+  const encoded = encodeURIComponent(joined);
+  let url;
+  if (base.includes('{proxyip}')) url = base.replace('{proxyip}', encoded);
+  else if (/[?&]proxyip=$/i.test(base) || base.endsWith('=')) url = base + encoded;
+  else url = base + (base.includes('?') ? (base.endsWith('&') || base.endsWith('?') ? '' : '&') : '?') + 'proxyip=' + encoded;
+  if (token && !/[?&]token=/i.test(url)) url += (url.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(token);
   return url;
 }
 async function checkApiOnce(targets, apiUrl, token, source, config) {
@@ -680,7 +684,8 @@ async function checkPostBatch(targets, apiUrl, token, source, config) {
   if (token) { headers.Authorization = `Bearer ${token}`; headers['X-Auth-Key'] = token; }
   try {
     const res = await fetchWithTimeout(apiUrl, { method: 'POST', headers, body: JSON.stringify({ targets: list }) }, config.checkTimeout * Math.max(1, Math.ceil(list.length / 2)));
-    const raw = safeJSONParse(await res.text(), {});
+    let raw = safeJSONParse(await res.text(), {});
+    if (!res.ok) raw = { success: false, message: raw?.message || `HTTP ${res.status}` };
     const rows = pickRows(raw);
     return list.map((candidate, i) => normalizeCheckRow(rows.find(r => normalizeAddr(r?.candidate || r?.target || r?.proxyIP || r?.proxyip || '') === candidate) || rows[i] || { success: false, message: '批量接口未返回该目标' }, candidate, source, Date.now() - started));
   } catch (e) {
@@ -692,22 +697,30 @@ async function checkTargets(targets, config, useBackupOnly = false) {
   if (!list.length) return [];
   const chunkSize = Math.max(1, config.checkBatchSize);
   const out = [];
+  const hasBackup = Boolean(config.checkApiBackup || config.checkBatchApiBackup);
+  const runPrimary = (chunk) => config.checkBatchApi
+    ? checkPostBatch(chunk, config.checkBatchApi, config.checkApiToken, 'main-batch', config)
+    : checkApiOnce(chunk, config.checkApi, config.checkApiToken, 'main', config);
+  const runBackup = (chunk) => config.checkBatchApiBackup
+    ? checkPostBatch(chunk, config.checkBatchApiBackup, config.checkApiBackupToken, 'backup-batch', config)
+    : checkApiOnce(chunk, config.checkApiBackup, config.checkApiBackupToken, 'backup', config);
+
   for (let i = 0; i < list.length; i += chunkSize) {
     const chunk = list.slice(i, i + chunkSize);
-    let rows = [];
-    if (useBackupOnly) {
-      rows = config.checkBatchApiBackup
-        ? await checkPostBatch(chunk, config.checkBatchApiBackup, config.checkApiBackupToken, 'backup-batch', config)
-        : await checkApiOnce(chunk, config.checkApiBackup, config.checkApiBackupToken, 'backup', config);
-    } else {
-      rows = config.checkBatchApi
-        ? await checkPostBatch(chunk, config.checkBatchApi, config.checkApiToken, 'main-batch', config)
-        : await checkApiOnce(chunk, config.checkApi, config.checkApiToken, 'main', config);
-      if (!rows.some(r => r.success) && (config.checkApiBackup || config.checkBatchApiBackup)) {
-        const backup = config.checkBatchApiBackup
-          ? await checkPostBatch(chunk, config.checkBatchApiBackup, config.checkApiBackupToken, 'backup-batch', config)
-          : await checkApiOnce(chunk, config.checkApiBackup, config.checkApiBackupToken, 'backup', config);
-        if (backup.some(r => r.success)) rows = backup;
+    let rows = useBackupOnly ? await runBackup(chunk) : await runPrimary(chunk);
+
+    // 节省优先：主接口有失败且配置了备用时，只回退失败项，不重复检测已成功项。
+    if (!useBackupOnly && hasBackup) {
+      const current = resultMap(rows);
+      const failed = chunk.filter(addr => current.get(addr)?.success !== true);
+      if (failed.length) {
+        const backupRows = await runBackup(failed);
+        const backup = resultMap(backupRows);
+        rows = chunk.map(addr => {
+          const primary = current.get(addr);
+          const secondary = backup.get(addr);
+          return secondary?.success ? secondary : (primary || secondary || { candidate: addr, success: false, source: 'main', message: '未返回检测结果' });
+        });
       }
     }
     out.push(...rows);
@@ -742,7 +755,11 @@ async function checkWithState(targets, config, state) {
   if (miss.length) {
     const checked = await checkTargets(miss, config);
     for (const row of checked) {
-      if (row.success) state.cache[normalizeAddr(row.candidate)] = { ...row, time: Date.now() };
+      if (row.success) {
+        const key = normalizeAddr(row.candidate);
+        state.cache[key] = { ...row, time: Date.now() };
+        state.cacheDirty = true;
+      }
       out.push(row);
     }
   }
@@ -752,12 +769,16 @@ function updateFailState(state, addr, check, config) {
   const key = normalizeAddr(addr);
   if (!key) return { failCount: 0, shouldTrash: false };
   if (check?.success === true) {
-    delete state.failCount[key];
+    if (state.failCount[key]) {
+      delete state.failCount[key];
+      state.failDirty = true;
+    }
     return { failCount: 0, shouldTrash: false };
   }
   const prev = state.failCount[key] || { count: 0 };
   const count = config.removeFailedImmediately ? config.failThreshold : Number(prev.count || 0) + 1;
   state.failCount[key] = { count, lastFailureAt: nowISO(), message: check?.message || '检测失败' };
+  state.failDirty = true;
   return { failCount: count, shouldTrash: count >= config.failThreshold };
 }
 async function addTrash(env, entries, config) {
@@ -797,16 +818,19 @@ function normalizePoolKey(value, fallback = 'pool') {
   let key = String(value || '').trim();
   if (!key) return fallback;
   if (key === 'pool' || key === 'pool_trash') return key;
-  key = key.replace(/[^\w\u4e00-\u9fa5-]/g, '_');
+  key = key.replace(/[^\w\u4e00-\u9fa5-]/g, '_').replace(/_+/g, '_').slice(0, 80);
+  if (!key || /^_+$/.test(key)) return fallback;
   return key.startsWith('pool_') ? key : `pool_${key}`;
 }
 
 async function getPoolCandidates(env, poolKey, target, config) {
   const entries = parsePool(await requireKV(env).get(poolKey) || '');
   const out = [];
+  const needIPv4 = target.mode === 'A';
   for (const entry of entries) {
     if (out.length >= config.maxCheckPerDomain) break;
     if (String(entry.port) !== String(target.port)) continue;
+    if (needIPv4 && !isIPv4(entry.host)) continue;
     out.push(entry.addr);
   }
   return unique(out);
@@ -866,8 +890,13 @@ async function maintainA(env, target, poolKey, state, config) {
   let records;
   try { records = await cfListRecords(config, target.domain, 'A'); }
   catch (e) { report.configError = true; report.status = 'failed'; addReportLog(report, `❌ 获取 A 记录失败：${e.message}`); return report; }
+
   report.currentCount = records.length;
-  const current = records.map(r => ({ id: r.id, host: r.content, addr: formatHostPort(r.content, target.port), record: r }));
+  const current = records
+    .filter(r => isIPv4(r.content))
+    .map(r => ({ id: r.id, host: r.content, addr: formatHostPort(r.content, target.port), record: r }));
+  const ignored = records.length - current.length;
+  if (ignored > 0) addReportLog(report, `⚠️ 忽略 ${ignored} 条非 IPv4 A 内容`);
   if (!current.length) addReportLog(report, '当前没有 A 记录，需要从 IP 池补充');
 
   const active = [];
@@ -879,24 +908,28 @@ async function maintainA(env, target, poolKey, state, config) {
     report.checkedCount += current.length;
     for (const item of current) {
       const row = m.get(item.addr) || { success: false, candidate: item.addr, message: '未返回检测结果' };
-      updateFailState(state, item.addr, row, config);
+      const st = updateFailState(state, item.addr, row, config);
       if (row.success) {
         active.push(item);
         addReportLog(report, `  ✅ ${item.addr} 活跃 ${row.colo || ''} ${row.responseTime || 0}ms`);
       } else {
-        inactive.push({ ...item, reason: row.message || '检测失败' });
-        addReportLog(report, `  ❌ ${item.addr} 失效：${row.message || 'success=false'}`);
+        inactive.push({ ...item, reason: row.message || '检测失败', failCount: st.failCount, removable: st.shouldTrash });
+        addReportLog(report, `  ❌ ${item.addr} 失效：${row.message || 'success=false'}，失败次数 ${st.failCount}/${config.failThreshold}`);
       }
     }
   }
   report.beforeActive = active.length;
 
   const need = Math.max(0, target.minActive - active.length);
-  const replacements = need > 0 ? await collectReplacementCandidates(env, poolKey, target, need, current.map(x => x.addr), state, config, report) : [];
+  const replacements = need > 0 ? await collectReplacementCandidates(env, poolKey, { ...target, mode: 'A' }, need, current.map(x => x.addr), state, config, report) : [];
 
   const addedHosts = [];
   for (const row of replacements) {
     const { host } = parseHostPort(row.candidate);
+    if (!isIPv4(host)) {
+      addReportLog(report, `  ⚠️ 跳过非 IPv4 候选：${row.candidate}`);
+      continue;
+    }
     const r = await cfCreateRecord(config, { type: 'A', name: target.domain, content: host });
     if (r.ok) {
       addedHosts.push(host);
@@ -908,9 +941,16 @@ async function maintainA(env, target, poolKey, state, config) {
   }
 
   const projectedActive = active.length + addedHosts.length;
-  const canDelete = inactive.length && (projectedActive >= target.minActive || config.removeUnhealthyWithoutReplacement || active.length > 0 || addedHosts.length > 0);
+  const removableInactive = inactive.filter(x => x.removable);
+  const protectedInactive = inactive.filter(x => !x.removable);
+  if (protectedInactive.length) {
+    report.keptFailed.push(...protectedInactive.map(x => ({ ip: x.addr, reason: `连续失败 ${x.failCount}/${config.failThreshold}，未到删除阈值` })));
+    addReportLog(report, `🛡️ ${protectedInactive.length} 条失效 A 未到阈值，暂不删除`);
+  }
+
+  const canDelete = removableInactive.length && (projectedActive >= target.minActive || config.removeUnhealthyWithoutReplacement);
   if (canDelete) {
-    for (const item of inactive) {
+    for (const item of removableInactive) {
       const r = await cfDeleteRecord(config, item.id);
       if (r.ok) {
         report.removed.push({ ip: item.addr, reason: item.reason });
@@ -920,9 +960,9 @@ async function maintainA(env, target, poolKey, state, config) {
         addReportLog(report, `  ⚠️ 删除 A ${item.host} 失败：${cfError(r)}`);
       }
     }
-  } else if (inactive.length) {
-    report.keptFailed.push(...inactive.map(x => ({ ip: x.addr, reason: '安全保护：没有可用替换，暂不删除全部失效记录' })));
-    addReportLog(report, `🛡️ 安全保护：没有足够替换，暂不删除 ${inactive.length} 条失效 A 记录`);
+  } else if (removableInactive.length) {
+    report.keptFailed.push(...removableInactive.map(x => ({ ip: x.addr, reason: '安全保护：没有足够可用替换，暂不删除' })));
+    addReportLog(report, `🛡️ 安全保护：没有足够替换，暂不删除 ${removableInactive.length} 条失效 A 记录`);
   }
 
   report.afterActive = projectedActive;
@@ -931,20 +971,41 @@ async function maintainA(env, target, poolKey, state, config) {
   return report;
 }
 
+function managedTxtRecords(records) {
+  return (records || []).map(record => ({ record, addrs: parseTXTContent(record.content || '') })).filter(x => x.addrs.length > 0);
+}
+function txtContentFromList(list) {
+  return unique(list).join(',');
+}
+function fitTxtList(list, config) {
+  const out = [];
+  for (const addr of unique(list)) {
+    if (out.length >= config.maxTxtTargets) break;
+    const next = [...out, addr];
+    if (txtContentFromList(next).length > config.maxTxtContentLength) break;
+    out.push(addr);
+  }
+  return out;
+}
+
 async function maintainTXT(env, target, poolKey, state, config) {
   const report = newReport({ ...target, mode: 'TXT' }, poolKey);
   addReportLog(report, `🚀 维护 TXT: ${target.domain}，最小活跃 ${target.minActive}`);
   let records;
   try { records = await cfListRecords(config, target.domain, 'TXT'); }
   catch (e) { report.configError = true; report.status = 'failed'; addReportLog(report, `❌ 获取 TXT 失败：${e.message}`); return report; }
-  const primary = records[0] || null;
-  const original = parseTXTContent(primary?.content || '');
+
+  const managed = managedTxtRecords(records);
+  const primary = managed[0]?.record || null;
+  const original = unique(managed.flatMap(x => x.addrs));
+  const extraManaged = managed.slice(1).map(x => x.record);
   report.currentCount = original.length;
-  if (!primary) addReportLog(report, '当前没有 TXT 记录，需要创建');
-  else addReportLog(report, `当前 TXT 包含 ${original.length} 个目标`);
+  if (!primary) addReportLog(report, '当前没有可识别的 ProxyIP TXT 记录，需要创建');
+  else addReportLog(report, `当前 TXT 包含 ${original.length} 个目标${extraManaged.length ? `，另有 ${extraManaged.length} 条同名可识别 TXT 将在写入成功后清理` : ''}`);
 
   const active = [];
-  const inactive = [];
+  const removable = [];
+  const protectedFailed = [];
   if (original.length) {
     addReportLog(report, `🔎 检测当前 TXT 目标 ${original.length} 个`);
     const rows = await checkWithState(original, config, state);
@@ -952,49 +1013,93 @@ async function maintainTXT(env, target, poolKey, state, config) {
     report.checkedCount += original.length;
     for (const addr of original) {
       const row = m.get(addr) || { success: false, candidate: addr, message: '未返回检测结果' };
-      updateFailState(state, addr, row, config);
+      const st = updateFailState(state, addr, row, config);
       if (row.success) {
         active.push(addr);
         addReportLog(report, `  ✅ ${addr} 活跃 ${row.colo || ''} ${row.responseTime || 0}ms`);
+      } else if (st.shouldTrash) {
+        removable.push({ addr, reason: row.message || '检测失败', failCount: st.failCount });
+        addReportLog(report, `  ❌ ${addr} 失效：${row.message || 'success=false'}，失败次数 ${st.failCount}/${config.failThreshold}`);
       } else {
-        inactive.push({ addr, reason: row.message || '检测失败' });
-        addReportLog(report, `  ❌ ${addr} 失效：${row.message || 'success=false'}`);
+        protectedFailed.push({ addr, reason: row.message || '检测失败', failCount: st.failCount });
+        addReportLog(report, `  ❌ ${addr} 暂不移除：${row.message || 'success=false'}，失败次数 ${st.failCount}/${config.failThreshold}`);
       }
     }
   }
   report.beforeActive = active.length;
+
   const need = Math.max(0, target.minActive - active.length);
-  const replacements = need > 0 ? await collectReplacementCandidates(env, poolKey, target, need, active, state, config, report) : [];
-  const added = replacements.map(r => normalizeAddr(r.candidate)).filter(Boolean);
-  const final = unique([...active, ...added]);
-  const changed = final.join(',') !== original.join(',');
+  const replacements = need > 0 ? await collectReplacementCandidates(env, poolKey, { ...target, mode: 'TXT' }, need, original, state, config, report) : [];
+  const added = replacements.map(r => normalizeAddr(r.candidate, target.port, { requireIp: true })).filter(Boolean);
 
-  for (const r of replacements) report.added.push({ ip: normalizeAddr(r.candidate), colo: r.colo, time: r.responseTime });
-  report.removed.push(...inactive.map(x => ({ ip: x.addr, reason: x.reason })));
+  for (const r of replacements) {
+    const ip = normalizeAddr(r.candidate, target.port, { requireIp: true });
+    if (ip) report.added.push({ ip, colo: r.colo, time: r.responseTime });
+  }
 
+  let final = unique([...active, ...protectedFailed.map(x => x.addr), ...added]);
+  let plannedRemoved = removable.map(x => ({ ip: x.addr, reason: x.reason }));
+
+  if (final.length === 0 && original.length > 0 && !config.deleteEmptyTxt && !config.removeUnhealthyWithoutReplacement) {
+    final = original;
+    plannedRemoved = [];
+    report.keptFailed.push(...removable.map(x => ({ ip: x.addr, reason: '安全保护：全部失败且无替换，未清空 TXT' })));
+    addReportLog(report, '🛡️ 安全保护：全部失败且无替换，未清空 TXT');
+  } else if (protectedFailed.length) {
+    report.keptFailed.push(...protectedFailed.map(x => ({ ip: x.addr, reason: `连续失败 ${x.failCount}/${config.failThreshold}，未到删除阈值` })));
+    addReportLog(report, `🛡️ ${protectedFailed.length} 个 TXT 目标未到删除阈值，暂时保留`);
+  }
+
+  const fitted = fitTxtList(final, config);
+  if (fitted.length < final.length) {
+    addReportLog(report, `⚠️ TXT 内容超过限制，仅保留 ${fitted.length}/${final.length} 个目标；可调大 MAX_TXT_TARGETS/MAX_TXT_CONTENT_LENGTH`);
+    const fittedSet = new Set(fitted);
+    const dropped = final.filter(x => !fittedSet.has(x));
+    report.keptFailed.push(...dropped.map(ip => ({ ip, reason: 'TXT 内容长度限制，未写入' })));
+  }
+  final = fitted;
+
+  const changed = txtContentFromList(final) !== txtContentFromList(original) || extraManaged.length > 0;
+  let writeOk = true;
   if (changed) {
-    if (final.length === 0 && original.length > 0 && !config.deleteEmptyTxt && !config.removeUnhealthyWithoutReplacement) {
-      report.keptFailed.push(...inactive.map(x => ({ ip: x.addr, reason: '安全保护：全部失败且无替换，未清空 TXT' })));
-      report.removed = [];
-      addReportLog(report, '🛡️ 安全保护：全部失败且无替换，未清空 TXT');
-    } else if (final.length === 0 && primary) {
+    if (final.length === 0 && primary) {
       const r = await cfDeleteRecord(config, primary.id);
+      writeOk = r.ok;
       if (r.ok) addReportLog(report, '🧹 TXT 已删除（最终列表为空）');
       else addReportLog(report, `⚠️ TXT 删除失败：${cfError(r)}`);
     } else if (final.length > 0) {
-      const content = `"${final.join(',')}"`;
+      const content = txtContentFromList(final);
       const r = primary
         ? await cfUpdateRecord(config, primary.id, { type: 'TXT', name: target.domain, content })
         : await cfCreateRecord(config, { type: 'TXT', name: target.domain, content });
+      writeOk = r.ok;
       if (r.ok) addReportLog(report, primary ? '📝 TXT 已更新' : '📝 TXT 已创建');
       else addReportLog(report, `⚠️ TXT 写入失败：${cfError(r)}`);
+    }
+
+    if (writeOk && extraManaged.length) {
+      for (const record of extraManaged) {
+        const r = await cfDeleteRecord(config, record.id);
+        if (r.ok) addReportLog(report, `  🧹 已清理重复 TXT ${record.id}`);
+        else addReportLog(report, `  ⚠️ 清理重复 TXT 失败：${cfError(r)}`);
+      }
     }
   } else {
     addReportLog(report, '✨ TXT 无需变更');
   }
 
-  report.afterActive = final.length;
-  report.status = report.configError ? 'failed' : (final.length >= target.minActive ? 'success' : (final.length > 0 ? 'partial' : 'failed'));
+  if (writeOk) report.removed.push(...plannedRemoved);
+  else {
+    report.writeFailed = true;
+    report.keptFailed.push(...plannedRemoved.map(x => ({ ip: x.ip, reason: `写入失败，未确认移除：${x.reason}` })));
+  }
+
+  const finalSet = new Set(final);
+  if (writeOk) report.added = report.added.filter(a => finalSet.has(a.ip));
+  else report.added = [];
+  const healthy = new Set([...active, ...added]);
+  report.afterActive = final.filter(x => healthy.has(x)).length;
+  report.status = report.configError || report.writeFailed ? 'failed' : (report.afterActive >= target.minActive ? 'success' : (report.afterActive > 0 ? 'partial' : 'failed'));
   addReportLog(report, `📊 TXT 维护完成：${report.afterActive}/${target.minActive}，新增 ${report.added.length}，移除 ${report.removed.length}`);
   return report;
 }
@@ -1024,26 +1129,69 @@ async function maintainTarget(env, target, mapping, state, config) {
   const txt = await maintainTXT(env, { ...target, mode: 'TXT' }, poolKey, state, config);
   return summarizeModeReport(target, [a, txt]);
 }
+async function acquireMaintainLock(env, config, isManual) {
+  const store = requireKV(env);
+  const now = Date.now();
+  const current = safeJSONParse(await store.get(MAINTAIN_LOCK_KEY), null);
+  if (current?.expiresAt && Number(current.expiresAt) > now) {
+    return { acquired: false, current };
+  }
+  const owner = `${isManual ? 'manual' : 'cron'}-${now}-${Math.random().toString(16).slice(2)}`;
+  const lock = { owner, mode: isManual ? 'manual' : 'cron', startedAt: nowISO(), expiresAt: now + config.maintainLockTtlSeconds * 1000 };
+  await store.put(MAINTAIN_LOCK_KEY, JSON.stringify(lock), { expirationTtl: config.maintainLockTtlSeconds });
+  const verify = safeJSONParse(await store.get(MAINTAIN_LOCK_KEY), null);
+  return verify?.owner === owner ? { acquired: true, owner } : { acquired: false, current: verify || current };
+}
+async function releaseMaintainLock(env, owner) {
+  if (!owner) return;
+  try {
+    const store = requireKV(env);
+    const current = safeJSONParse(await store.get(MAINTAIN_LOCK_KEY), null);
+    if (!current?.owner || current.owner === owner) await store.delete(MAINTAIN_LOCK_KEY);
+  } catch {}
+}
+
 async function maintainAllDomains(env, isManual, config) {
   const start = Date.now();
   const store = requireKV(env);
   const targets = config.targets || [];
-  const mapping = await getMapping(env);
-  const state = { cache: await loadJsonKV(env, CHECK_CACHE_KEY, {}), failCount: await loadJsonKV(env, CHECK_FAIL_KEY, {}) };
-  const reports = [];
-  let cursor = toInt(await store.get(MAINTAIN_CURSOR_KEY), 0, 0, Math.max(0, targets.length - 1));
-  const max = Math.min(config.maintainMaxDomains, targets.length || 0);
-  for (let i = 0; i < max; i++) {
-    const idx = (cursor + i) % targets.length;
-    const target = targets[idx];
-    reports.push(await maintainTarget(env, target, mapping, state, config));
+  if (!targets.length) {
+    return { processedTargets: 0, totalTargets: 0, nextCursor: 0, reports: [], notified: false, tgStatus: { sent: false, reason: 'no_targets' }, processingTime: Date.now() - start };
   }
-  if (targets.length) await store.put(MAINTAIN_CURSOR_KEY, String((cursor + max) % targets.length));
-  await saveJsonKV(env, CHECK_CACHE_KEY, state.cache);
-  await saveJsonKV(env, CHECK_FAIL_KEY, state.failCount);
-  const notify = isManual || reports.some(r => r.added?.length || r.removed?.length || r.status !== 'success');
-  const tgStatus = notify ? await sendTelegram(reports, config, isManual) : { sent: false, reason: 'no_need' };
-  return { processedTargets: reports.length, totalTargets: targets.length, nextCursor: targets.length ? (cursor + max) % targets.length : 0, reports, notified: tgStatus.sent, tgStatus, processingTime: Date.now() - start };
+
+  const lock = await acquireMaintainLock(env, config, isManual);
+  if (!lock.acquired) {
+    return { processedTargets: 0, totalTargets: targets.length, nextCursor: 0, reports: [], skipped: true, reason: 'maintain_locked', lock: lock.current || null, notified: false, tgStatus: { sent: false, reason: 'locked' }, processingTime: Date.now() - start };
+  }
+
+  try {
+    const mapping = await getMapping(env);
+    const state = {
+      cache: config.checkCacheEnabled ? await loadJsonKV(env, CHECK_CACHE_KEY, {}) : {},
+      failCount: await loadJsonKV(env, CHECK_FAIL_KEY, {}),
+      cacheDirty: false,
+      failDirty: false,
+    };
+    const reports = [];
+    let cursor = toInt(await store.get(MAINTAIN_CURSOR_KEY), 0, 0, Math.max(0, targets.length - 1));
+    const max = Math.min(config.maintainMaxDomains, targets.length);
+    for (let i = 0; i < max; i++) {
+      const idx = (cursor + i) % targets.length;
+      const target = targets[idx];
+      reports.push(await maintainTarget(env, target, mapping, state, config));
+    }
+
+    const nextCursor = (cursor + max) % targets.length;
+    if (max > 0) await store.put(MAINTAIN_CURSOR_KEY, String(nextCursor));
+    if (config.checkCacheEnabled && state.cacheDirty) await saveJsonKV(env, CHECK_CACHE_KEY, state.cache);
+    if (state.failDirty) await saveJsonKV(env, CHECK_FAIL_KEY, state.failCount);
+
+    const notify = isManual || reports.some(r => r.added?.length || r.removed?.length || r.status !== 'success');
+    const tgStatus = notify ? await sendTelegram(reports, config, isManual) : { sent: false, reason: 'no_need' };
+    return { processedTargets: reports.length, totalTargets: targets.length, nextCursor, reports, notified: tgStatus.sent, tgStatus, processingTime: Date.now() - start };
+  } finally {
+    await releaseMaintainLock(env, lock.owner);
+  }
 }
 
 async function sendTelegram(reports, config, isManual) {
@@ -1055,6 +1203,7 @@ async function sendTelegram(reports, config, isManual) {
     for (const a of (r.added || []).slice(0, 8)) text += `+ ${a.ip}\n`;
     for (const d of (r.removed || []).slice(0, 8)) text += `- ${d.ip}\n`;
   }
+  if (text.length > 3900) text = text.slice(0, 3890) + '\n…已截断';
   try {
     const res = await fetchWithTimeout(`https://api.telegram.org/bot${config.tgToken}/sendMessage`, {
       method: 'POST', headers: { 'Content-Type': JSON_TYPE }, body: JSON.stringify({ chat_id: config.tgId, text, disable_web_page_preview: true })
@@ -1073,7 +1222,7 @@ async function handleHealth(env, config) {
   return ok({ ok: true, version: VERSION, kv, kvBinding: binding.name, targets: config.targets.length, timestamp: nowISO() });
 }
 async function handleConfig(env, config) {
-  return ok({ version: VERSION, targets: config.targets, settings: { checkConcurrency: config.checkConcurrency, checkBatchSize: config.checkBatchSize, maxCheckPerDomain: config.maxCheckPerDomain, failThreshold: config.failThreshold, removeFailedImmediately: config.removeFailedImmediately, removeUnhealthyWithoutReplacement: config.removeUnhealthyWithoutReplacement, sourceRules: config.sourceRules.length, sourceAutoRefresh: config.sourceAutoRefresh }, authEnabled: !!config.authKey });
+  return ok({ version: VERSION, targets: config.targets, settings: { checkConcurrency: config.checkConcurrency, checkBatchSize: config.checkBatchSize, maxCheckPerDomain: config.maxCheckPerDomain, maintainMaxDomains: config.maintainMaxDomains, failThreshold: config.failThreshold, checkCacheEnabled: config.checkCacheEnabled, checkCacheTtlMinutes: config.checkCacheTtlMinutes, maxTxtTargets: config.maxTxtTargets, maxTxtContentLength: config.maxTxtContentLength, removeFailedImmediately: config.removeFailedImmediately, removeUnhealthyWithoutReplacement: config.removeUnhealthyWithoutReplacement }, authEnabled: !!config.authKey });
 }
 async function handlePools(env) {
   const store = requireKV(env);
@@ -1221,175 +1370,6 @@ async function handleMappingSave(request, env) {
   await setMapping(env, normalized);
   return ok({ mapping: normalized });
 }
-
-function getCheckExits(row) {
-  const raw = row?.raw || row || {};
-  const probe = raw.probe_results || {};
-  const exits = [];
-  for (const key of ['ipv4', 'ipv6']) {
-    const exit = probe?.[key]?.exit;
-    if (exit && typeof exit === 'object') exits.push({ ...exit, stack: key });
-  }
-  if (!exits.length && (row?.exitIP || row?.country || row?.asn)) {
-    exits.push({ ip: row.exitIP, country: row.country, city: row.city, asn: row.asn, asOrganization: row.org });
-  }
-  return exits.filter(Boolean);
-}
-
-function countryFromCheck(row, fallback = '') {
-  const exits = getCheckExits(row);
-  const found = exits.map(e => normalizeCountry(e.country || e.countryCode)).find(Boolean);
-  return found || normalizeCountry(row?.country) || normalizeCountry(fallback);
-}
-
-function cityFromCheck(row) {
-  const e = getCheckExits(row)[0] || {};
-  return String(e.city || row?.city || '').trim();
-}
-
-function orgFromCheck(row) {
-  const e = getCheckExits(row)[0] || {};
-  return String(e.asOrganization || e.org || row?.org || '').replace(/^AS\d+\s+/i, '').trim();
-}
-
-function asnFromCheck(row) {
-  const e = getCheckExits(row)[0] || {};
-  const asn = e.asn ?? row?.asn ?? '';
-  return asn ? `AS${asn}` : '';
-}
-
-function sourcePoolKey(rule, country) {
-  if (rule?.pool) return normalizePoolKey(rule.pool);
-  return country ? normalizePoolKey(country.toLowerCase()) : 'pool';
-}
-
-function sourceComment(row, rule, country) {
-  const tag = normalizeCountry(country || rule?.country || '');
-  return tag ? `# ${tag}` : '# source';
-}
-
-async function loadSourceRuleCandidates(rule, config) {
-  const entries = [];
-  const errors = [];
-  for (const rawUrl of rule.urls || []) {
-    let u;
-    try { u = new URL(rawUrl); } catch { errors.push({ url: rawUrl, error: 'URL 无效' }); continue; }
-    if (!['http:', 'https:'].includes(u.protocol)) { errors.push({ url: rawUrl, error: '仅支持 http/https' }); continue; }
-    try {
-      const res = await fetchWithTimeout(u.toString(), { headers: { 'User-Agent': 'DDNS-Pro-Source/29' }, cf: { cacheTtl: 0 } }, config.remoteTimeout);
-      if (!res.ok) { errors.push({ url: rawUrl, error: `HTTP ${res.status}` }); continue; }
-      const text = (await res.text()).slice(0, config.maxRemoteBytes);
-      entries.push(...extractRemoteEntries(text, { port: config.sourceDefaultPort, country: rule.country, format: 'auto' }));
-    } catch (e) {
-      errors.push({ url: rawUrl, error: e.message || '加载失败' });
-    }
-  }
-  const map = new Map();
-  for (const entry of entries) {
-    const addr = normalizeAddr(entry?.addr || entry);
-    if (!addr || map.has(addr)) continue;
-    map.set(addr, { addr, country: normalizeCountry(entry?.country || rule.country || ''), comment: entry?.comment || '' });
-  }
-  const normalized = Array.from(map.values()).slice(0, config.sourceMaxCandidates);
-  return { entries: normalized, candidates: normalized.map(e => e.addr), meta: Object.fromEntries(normalized.map(e => [e.addr, e])), errors };
-}
-
-async function mergeLinesIntoPool(env, poolKey, lines) {
-  const store = requireKV(env);
-  const current = await store.get(poolKey) || '';
-  const map = new Map();
-  for (const entry of parsePool(current)) map.set(entry.addr, entry.line);
-  let added = 0, updated = 0;
-  for (const raw of lines) {
-    const { main, comment } = splitComment(raw);
-    const addr = normalizeAddr(main);
-    if (!addr) continue;
-    const nextLine = comment ? `${addr} ${comment}` : addr;
-    if (!map.has(addr)) { added++; map.set(addr, nextLine); }
-    else if (map.get(addr) !== nextLine) { updated++; map.set(addr, nextLine); }
-  }
-  await store.put(poolKey, Array.from(map.values()).join('\n'));
-  return { poolKey, added, updated, total: map.size };
-}
-
-async function refreshSources(env, config, options = {}) {
-  const started = Date.now();
-  const rules = config.sourceRules || [];
-  if (!rules.length) return { enabled: false, message: '未配置 SOURCE_URLS / SOURCE_URLS_XX / SOURCE_RULES', rules: [], pools: [], processingTime: Date.now() - started };
-
-  const reports = [];
-  const grouped = new Map();
-  let totalCandidates = 0;
-  let totalChecked = 0;
-  let totalUsable = 0;
-
-  for (const rule of rules) {
-    const loaded = await loadSourceRuleCandidates(rule, config);
-    const entries = (loaded.entries || []).slice(0, config.sourceImportLimit);
-    const candidates = entries.map(e => e.addr);
-    const metaByAddr = new Map(entries.map(e => [normalizeAddr(e.addr), e]));
-    totalCandidates += (loaded.entries || loaded.candidates || []).length;
-    const checked = candidates.length ? await checkTargets(candidates, config) : [];
-    totalChecked += checked.length;
-    const usable = checked.filter(r => r.success === true);
-    totalUsable += usable.length;
-
-    const perCountry = new Map();
-    for (const row of usable) {
-      const addr = normalizeAddr(row.candidate);
-      const meta = metaByAddr.get(addr) || {};
-      const country = normalizeCountry(meta.country || rule.country || countryFromCheck(row, ''));
-      const poolKey = sourcePoolKey(rule, country);
-      const arr = grouped.get(poolKey) || [];
-      const currentCountryCount = perCountry.get(country || 'pool') || 0;
-      if (currentCountryCount >= config.sourceTargetPerCountry) continue;
-      arr.push(`${addr} ${sourceComment(row, rule, country)}`);
-      grouped.set(poolKey, arr);
-      perCountry.set(country || 'pool', currentCountryCount + 1);
-    }
-
-    reports.push({
-      id: rule.id,
-      country: rule.country || '',
-      pool: rule.pool || '',
-      urls: rule.urls.length,
-      loaded: loaded.candidates.length,
-      checked: checked.length,
-      usable: usable.length,
-      errors: loaded.errors,
-      countries: Object.fromEntries(perCountry.entries()),
-    });
-  }
-
-  const pools = [];
-  for (const [poolKey, lines] of grouped.entries()) {
-    pools.push(await mergeLinesIntoPool(env, poolKey, lines));
-  }
-
-  const result = { enabled: true, totalCandidates, totalChecked, totalUsable, reports, pools, processingTime: Date.now() - started, timestamp: nowISO() };
-  await saveJsonKV(env, SOURCE_REFRESH_KEY, result);
-  return result;
-}
-
-async function handleSourcesConfig(env, config) {
-  const last = await loadJsonKV(env, SOURCE_REFRESH_KEY, null);
-  return ok({
-    rules: (config.sourceRules || []).map(r => ({ id: r.id, country: r.country, pool: r.pool, urls: r.urls.length })),
-    settings: {
-      sourceMaxCandidates: config.sourceMaxCandidates,
-      sourceImportLimit: config.sourceImportLimit,
-      sourceTargetPerCountry: config.sourceTargetPerCountry,
-      sourceDefaultPort: config.sourceDefaultPort,
-      sourceAutoRefresh: config.sourceAutoRefresh,
-    },
-    last,
-  });
-}
-
-async function handleSourcesRefresh(env, config) {
-  return ok(await refreshSources(env, config, { manual: true }));
-}
-
 async function handleLoadRemote(request, config) {
   const body = await readJson(request);
   if (!body?.url) return fail('MISSING_URL', '缺少 URL');
@@ -1397,44 +1377,42 @@ async function handleLoadRemote(request, config) {
   if (!['http:', 'https:'].includes(u.protocol)) return fail('BAD_URL', '仅支持 http/https');
   const res = await fetchWithTimeout(u.toString(), { headers: { 'User-Agent': 'DDNS-Pro/12' } }, config.remoteTimeout);
   if (!res.ok) return fail('REMOTE_FAILED', `远程加载失败 HTTP ${res.status}`, 502);
+  const length = Number(res.headers.get('Content-Length') || 0);
+  if (length && length > config.maxRemoteBytes) return fail('REMOTE_TOO_LARGE', `远程内容过大：${length} bytes`, 413);
   const text = (await res.text()).slice(0, config.maxRemoteBytes);
   const port = String(body.port || body.defaultPort || '443');
   const country = String(body.cfCountry || body.country || '').trim().toUpperCase();
   const lines = extractRemoteTargets(text, { port, country, format: body.format || 'auto' });
   return ok({ ips: lines.join('\n'), count: lines.length });
 }
-function countryTagFromComment(comment) {
-  const text = String(comment || '').replace(/^#/, '').trim();
-  if (!text) return '';
-  const m = text.match(/(?:^|[\s,;|·/\[\](){}_-])([A-Za-z]{2})(?=$|[\s,;|·/\]\){}_:-])/);
-  return m ? normalizeCountry(m[1]) : '';
+function countryToken(value) {
+  return String(value || '').trim().toUpperCase();
 }
-function extractRemoteEntries(text, options) {
-  const format = String(options.format || 'auto').toLowerCase();
-  if (format === 'csv' || (format === 'auto' && text.includes(',') && /ip|address|端口|port|colo|country/i.test(text.split(/\r?\n/)[0] || ''))) return extractCsvEntries(text, options);
-  const out = [];
-  const lineRegex = /(\[[0-9a-fA-F:]+\]|\b(?:\d{1,3}\.){3}\d{1,3}\b|\b[0-9a-fA-F:]{2,}\b)(?::(\d{1,5}))?/g;
-  for (const rawLine of String(text || '').split(/\r?\n/)) {
-    const { main, comment } = splitComment(rawLine);
-    const country = countryTagFromComment(comment) || normalizeCountry(options.country || '');
-    let m;
-    lineRegex.lastIndex = 0;
-    while ((m = lineRegex.exec(main))) {
-      const host = stripBrackets(m[1]);
-      if (!isIPv4(host) && !isIPv6(host)) continue;
-      out.push({ addr: formatHostPort(host, m[2] || options.port || '443'), country, comment });
-    }
-  }
-  const map = new Map();
-  for (const item of out) {
-    const addr = normalizeAddr(item.addr);
-    if (!addr || map.has(addr)) continue;
-    map.set(addr, { ...item, addr });
-  }
-  return Array.from(map.values());
+function lineMatchesCountry(line, country) {
+  const token = countryToken(country);
+  if (!token) return true;
+  const s = String(line || '').toUpperCase();
+  const comment = s.includes('#') ? s.slice(s.indexOf('#') + 1) : s;
+  return new RegExp(`(^|[^A-Z0-9])${token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}([^A-Z0-9]|$)`).test(comment);
 }
 function extractRemoteTargets(text, options) {
-  return extractRemoteEntries(text, options).map(item => item.addr);
+  const format = String(options.format || 'auto').toLowerCase();
+  if (format === 'csv' || (format === 'auto' && text.includes(',') && /ip|address|端口|port|colo|country/i.test(text.split(/\r?\n/)[0] || ''))) return extractCsvTargets(text, options);
+
+  const out = [];
+  const regex = /(\[[0-9a-fA-F:]+\]|\b(?:\d{1,3}\.){3}\d{1,3}\b|\b[0-9a-fA-F:]{2,}\b)(?::(\d{1,5}))?/g;
+  for (const line of String(text || '').split(/\r?\n/)) {
+    if (!lineMatchesCountry(line, options.country)) continue;
+    const main = splitComment(line).main;
+    let m;
+    regex.lastIndex = 0;
+    while ((m = regex.exec(main))) {
+      const host = stripBrackets(m[1]);
+      if (!isIpHost(host)) continue;
+      out.push(formatHostPort(host, m[2] || options.port || '443'));
+    }
+  }
+  return unique(out);
 }
 function parseCsvLine(line) {
   const out = []; let cur = ''; let q = false;
@@ -1447,43 +1425,48 @@ function parseCsvLine(line) {
   }
   out.push(cur.trim()); return out;
 }
-function extractCsvEntries(text, options) {
+function csvCountryMatches(value, country) {
+  const token = countryToken(country);
+  if (!token) return true;
+  return lineMatchesCountry(`# ${String(value || '')}`, token);
+}
+function extractCsvTargets(text, options) {
   const rows = text.split(/\r?\n/).filter(Boolean).map(parseCsvLine);
   if (!rows.length) return [];
   const header = rows[0].map(h => h.toLowerCase());
   const ipIdx = header.findIndex(h => /^(ip|addr|address|proxyip|host)$/.test(h));
   const portIdx = header.findIndex(h => /port|端口/.test(h));
-  const countryIdx = header.findIndex(h => /country|cfcolo|colo|国家|地区/.test(h));
+  const countryIdx = header.findIndex(h => /country|cfcolo|colo|国家|地区|region|地区/.test(h));
   const dataRows = ipIdx >= 0 ? rows.slice(1) : rows;
   const out = [];
   for (const row of dataRows) {
-    const country = normalizeCountry((countryIdx >= 0 ? row[countryIdx] : '') || options.country || '');
-    if (options.country && countryIdx >= 0 && country !== normalizeCountry(options.country)) continue;
+    if (options.country && countryIdx >= 0 && !csvCountryMatches(row[countryIdx], options.country)) continue;
     const host = stripBrackets(row[ipIdx >= 0 ? ipIdx : 0] || '');
-    if (!isIPv4(host) && !isIPv6(host)) continue;
-    out.push({ addr: formatHostPort(host, row[portIdx] || options.port || '443'), country });
+    if (!isIpHost(host)) continue;
+    const port = row[portIdx] || options.port || '443';
+    if (!isValidPortValue(port)) continue;
+    out.push(formatHostPort(host, port));
   }
-  return out;
-}
-function extractCsvTargets(text, options) {
-  return extractCsvEntries(text, options).map(item => item.addr);
+  return unique(out);
 }
 async function handleAddRecord(request, config) {
   const body = await readJson(request);
   const target = config.targets[toInt(body?.targetIndex, 0, 0, Math.max(0, config.targets.length - 1))];
   if (!target) return fail('NO_TARGET', '未配置目标域名');
-  const addr = normalizeAddr(body?.ip || '', target.port);
-  if (!addr) return fail('MISSING_IP', '缺少 IP');
+  const addr = normalizeAddr(body?.ip || '', target.port, { requireIp: true });
+  if (!addr) return fail('MISSING_IP', '缺少有效 IP');
   const { host } = parseHostPort(addr);
   if (target.mode === 'TXT') {
     const records = await cfListRecords(config, target.domain, 'TXT');
-    const primary = records[0] || null;
-    const list = primary ? parseTXTContent(primary.content) : [];
+    const managed = managedTxtRecords(records);
+    const primary = managed[0]?.record || null;
+    const list = managed.length ? unique(managed.flatMap(x => x.addrs)) : [];
     if (!list.includes(addr)) list.push(addr);
-    const content = `"${list.join(',')}"`;
+    const content = txtContentFromList(list);
     const r = primary ? await cfUpdateRecord(config, primary.id, { type: 'TXT', name: target.domain, content }) : await cfCreateRecord(config, { type: 'TXT', name: target.domain, content });
     return r.ok ? ok({ added: addr, mode: 'TXT' }) : fail('CF_ERROR', cfError(r), 502, r);
   }
+  if (!isIPv4(host)) return fail('BAD_IP_VERSION', 'A 记录只能添加 IPv4；IPv6 请使用 TXT 模式');
   const r = await cfCreateRecord(config, { type: 'A', name: target.domain, content: host });
   return r.ok ? ok({ added: host, mode: 'A' }) : fail('CF_ERROR', cfError(r), 502, r);
 }
@@ -1510,8 +1493,6 @@ const ROUTES = {
   '/api/clear-trash': (url, req, env) => handleClearTrash(env),
   '/api/restore-from-trash': (url, req, env) => handleRestoreTrash(req, env),
   '/api/load-remote-url': (url, req, env, config) => handleLoadRemote(req, config),
-  '/api/sources/config': (url, req, env, config) => handleSourcesConfig(env, config),
-  '/api/sources/refresh': (url, req, env, config) => handleSourcesRefresh(env, config),
   '/api/resolve': (url, req, env, config) => handleResolve(url, config),
   '/api/resolve-batch': (url, req, env, config) => handleResolveBatch(req, config),
   '/api/check-ip': (url, req, env, config) => handleCheckIP(url, config),
@@ -1525,7 +1506,7 @@ const ROUTES = {
   '/api/delete-record': (url, req, env, config) => handleDeleteRecord(url, config),
   '/api/maintain': (url, req, env, config) => handleMaintain(url, env, config),
 };
-const POST_ONLY = new Set(['/api/auth/login','/api/auth/logout','/api/save-pool','/api/create-pool','/api/delete-pool','/api/clear-trash','/api/restore-from-trash','/api/load-remote-url','/api/sources/refresh','/api/resolve-batch','/api/check','/api/save-domain-pool-mapping','/api/add-a-record','/api/delete-record','/api/maintain']);
+const POST_ONLY = new Set(['/api/auth/login','/api/auth/logout','/api/save-pool','/api/create-pool','/api/delete-pool','/api/clear-trash','/api/restore-from-trash','/api/load-remote-url','/api/resolve-batch','/api/check','/api/save-domain-pool-mapping','/api/add-a-record','/api/delete-record','/api/maintain']);
 async function handleApi(request, env, config) {
   const url = new URL(request.url);
   const handler = ROUTES[url.pathname];
@@ -1597,11 +1578,6 @@ export default {
   },
   async scheduled(event, env, ctx) {
     const config = createConfig(env);
-    ctx.waitUntil((async () => {
-      if (config.sourceAutoRefresh && config.sourceRules.length) {
-        await refreshSources(env, config, { manual: false }).catch(e => console.error('scheduled source refresh failed', e));
-      }
-      await maintainAllDomains(env, false, config);
-    })().catch(e => console.error('scheduled maintain failed', e)));
+    ctx.waitUntil(maintainAllDomains(env, false, config).catch(e => console.error('scheduled maintain failed', e)));
   }
 };
