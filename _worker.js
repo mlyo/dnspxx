@@ -3,7 +3,7 @@
  * Frontend is deployed as remote static assets; Worker serves it through same-origin proxy.
  */
 
-const VERSION = '29.0.0-manual-pool-txt';
+const VERSION = '29.2.0-txt-quote-safe';
 const JSON_TYPE = 'application/json; charset=UTF-8';
 const CHECK_CACHE_KEY = 'check_cache_v2';
 const CHECK_FAIL_KEY = 'check_fail_v2';
@@ -42,7 +42,7 @@ const DEFAULTS = Object.freeze({
   publicTxtEndpoint: true,
   publicTxtAllowAny: false,
   txtStrictPort: true,
-  enableRemoteImport: false,
+  enableRemoteImport: true,
 });
 
 const SYSTEM_POOLS = new Set(['pool', 'pool_trash']);
@@ -451,8 +451,24 @@ function formatHostPort(host, port = '443') {
   if (!h) return '';
   return isIPv6(h) ? `[${h}]:${p}` : `${h}:${p}`;
 }
+function stripWrappingQuotes(value) {
+  let s = String(value ?? '').trim();
+  if (!s) return '';
+  if (s.startsWith('\\"') && s.endsWith('\\"') && s.length >= 4) s = s.slice(2, -2).trim();
+  let changed = true;
+  while (changed && s.length >= 2) {
+    changed = false;
+    const first = s[0];
+    const last = s[s.length - 1];
+    if ((first === '"' && last === '"') || (first === "'" && last === "'")) {
+      s = s.slice(1, -1).trim();
+      changed = true;
+    }
+  }
+  return s.replace(/\\"/g, '"').trim();
+}
 function parseHostPort(input, defaultPort = '443') {
-  let text = String(input || '').split('#')[0].trim();
+  let text = stripWrappingQuotes(String(input || '').split('#')[0].trim());
   const fallbackPort = isValidPortValue(defaultPort) ? String(Math.floor(Number(defaultPort))) : '443';
   if (!text) return { host: '', port: fallbackPort };
   if (/^https?:\/\//i.test(text)) {
@@ -555,16 +571,28 @@ async function dohQuery(name, type, config) {
 function normalizeTxtValue(value) {
   let s = String(value ?? '').trim();
   if (!s) return '';
-  const quoted = [];
-  const re = /"((?:\\.|[^"])*)"/g;
-  let m;
-  while ((m = re.exec(s))) quoted.push(m[1].replace(/\\"/g, '"'));
-  if (quoted.length && quoted.join('').length >= s.replace(/["\s]/g, '').length * 0.5) s = quoted.join('');
-  else if (s.startsWith('"') && s.endsWith('"')) s = s.slice(1, -1);
-  return s.replace(/\\"/g, '"').trim();
+  if (s.startsWith('\\"') && s.endsWith('\\"') && s.length >= 4) s = s.slice(2, -2).trim();
+  if (!s.includes('"')) return stripWrappingQuotes(s);
+
+  // Cloudflare 控制台 / DNS JSON 常把 TXT 展示为 "..."，多段 TXT 可能显示为 "..." "..."。
+  // 这里只做读取侧兼容：去掉展示层引号、保留逗号/空格等分隔符；写入侧不主动加引号。
+  let out = '';
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (ch !== '"') { out += ch; continue; }
+    i++;
+    while (i < s.length) {
+      const c = s[i];
+      if (c === '\\' && i + 1 < s.length) { out += s[i + 1]; i += 2; continue; }
+      if (c === '"') break;
+      out += c;
+      i++;
+    }
+  }
+  return stripWrappingQuotes(out);
 }
 function parseTXTContent(content) {
-  return unique(normalizeTxtValue(content).split(/[,，\s]+/).map(v => normalizeAddr(v, '443', { requireIp: true })).filter(Boolean));
+  return unique(normalizeTxtValue(content).split(/[,，;\s]+/).map(v => normalizeAddr(v, '443', { requireIp: true })).filter(Boolean));
 }
 async function resolveTarget(input, config) {
   let raw = String(input || '').trim();
@@ -640,14 +668,21 @@ async function cfListRecords(config, domain, type) {
   }
   return out;
 }
-async function cfCreateRecord(config, record) {
+function prepareDnsRecordBody(config, record) {
   const body = { ttl: config.dnsTtl, proxied: config.proxied, ...record };
-  if (body.type === 'TXT') delete body.proxied;
+  if (body.type === 'TXT') {
+    delete body.proxied;
+    // Cloudflare API 接收不带外层引号的 content。控制台/查询结果可能显示引号，不能在这里主动包引号。
+    body.content = normalizeTxtValue(body.content);
+  }
+  return body;
+}
+async function cfCreateRecord(config, record) {
+  const body = prepareDnsRecordBody(config, record);
   return await fetchCF(config, `/zones/${config.zoneId}/dns_records`, 'POST', body);
 }
 async function cfUpdateRecord(config, id, record) {
-  const body = { ttl: config.dnsTtl, proxied: config.proxied, ...record };
-  if (body.type === 'TXT') delete body.proxied;
+  const body = prepareDnsRecordBody(config, record);
   return await fetchCF(config, `/zones/${config.zoneId}/dns_records/${id}`, 'PUT', body);
 }
 async function cfDeleteRecord(config, id) {
@@ -1018,7 +1053,7 @@ function managedTxtRecords(records) {
   return (records || []).map(record => ({ record, addrs: parseTXTContent(record.content || '') })).filter(x => x.addrs.length > 0);
 }
 function txtContentFromList(list) {
-  return unique(list).join(',');
+  return unique((list || []).map(v => normalizeAddr(v, '443', { requireIp: true })).filter(Boolean)).join(',');
 }
 function fitTxtList(list, config) {
   const out = [];
@@ -1266,7 +1301,7 @@ async function handleHealth(env, config) {
   return ok({ ok: true, version: VERSION, kv, kvBinding: binding.name, targets: config.targets.length, timestamp: nowISO() });
 }
 async function handleConfig(env, config) {
-  return ok({ version: VERSION, targets: config.targets, settings: { txtOnly: config.txtOnly, enableARecords: config.enableARecords, preferTxtResolve: config.preferTxtResolve, allowAResolve: config.allowAResolve, publicTxtEndpoint: config.publicTxtEndpoint, checkConcurrency: config.checkConcurrency, checkBatchSize: config.checkBatchSize, maxCheckPerDomain: config.maxCheckPerDomain, maintainMaxDomains: config.maintainMaxDomains, failThreshold: config.failThreshold, checkCacheEnabled: config.checkCacheEnabled, checkCacheTtlMinutes: config.checkCacheTtlMinutes, maxTxtTargets: config.maxTxtTargets, maxTxtContentLength: config.maxTxtContentLength, txtStrictPort: config.txtStrictPort, enableRemoteImport: config.enableRemoteImport, manualPoolOnly: !config.enableRemoteImport, removeFailedImmediately: config.removeFailedImmediately, removeUnhealthyWithoutReplacement: config.removeUnhealthyWithoutReplacement }, authEnabled: !!config.authKey });
+  return ok({ version: VERSION, targets: config.targets, settings: { txtOnly: config.txtOnly, enableARecords: config.enableARecords, preferTxtResolve: config.preferTxtResolve, allowAResolve: config.allowAResolve, publicTxtEndpoint: config.publicTxtEndpoint, checkConcurrency: config.checkConcurrency, checkBatchSize: config.checkBatchSize, maxCheckPerDomain: config.maxCheckPerDomain, maintainMaxDomains: config.maintainMaxDomains, failThreshold: config.failThreshold, checkCacheEnabled: config.checkCacheEnabled, checkCacheTtlMinutes: config.checkCacheTtlMinutes, maxTxtTargets: config.maxTxtTargets, maxTxtContentLength: config.maxTxtContentLength, txtStrictPort: config.txtStrictPort, enableRemoteImport: config.enableRemoteImport, manualPoolOnly: true, removeFailedImmediately: config.removeFailedImmediately, removeUnhealthyWithoutReplacement: config.removeUnhealthyWithoutReplacement }, authEnabled: !!config.authKey });
 }
 async function handlePools(env) {
   const store = requireKV(env);
@@ -1419,7 +1454,7 @@ async function handleMappingSave(request, env) {
   return ok({ mapping: normalized });
 }
 async function handleLoadRemote(request, config) {
-  if (!config.enableRemoteImport) return fail('REMOTE_IMPORT_DISABLED', '远程导入已关闭：当前版本按手动导入 IP 池设计，Cron 不会拉取远程源。', 403);
+  if (!config.enableRemoteImport) return fail('REMOTE_IMPORT_DISABLED', '远程手动导入已被 ENABLE_REMOTE_IMPORT=0 禁用；Cron 始终不会自动拉取远程源。', 403);
   const body = await readJson(request);
   if (!body?.url) return fail('MISSING_URL', '缺少 URL');
   let u; try { u = new URL(body.url); } catch { return fail('BAD_URL', 'URL 无效'); }
