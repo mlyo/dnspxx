@@ -3201,178 +3201,383 @@ function renderHTML(C, runtimeState = {}) {
             }
         }
 
+        /* ===== Plan A mobile real list: stable, compact, no table squeezing ===== */
+        .status-mobile-list {
+            display: none;
+        }
 
-        /* ===== 方案A：移动端独立列表结构 ===== */
-        #status-mobile-list { display: none; }
-        .mobile-action-wrap .btn { padding: 4px 8px; font-size: 12px; line-height: 1.2; border-radius: 8px; }
-        .mobile-action-wrap a { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: 8px; background: #fff1f2; }
         @media (max-width: 768px) {
-            body { background: #f8fafc; }
-            .container { padding-left: 12px; padding-right: 12px; }
-            .hero { padding: 16px 0 12px; }
-            .hero h1 { font-size: 1.35rem; line-height: 1.25; margin-bottom: 10px; }
-            .hero-actions { gap: 8px; }
-            .config-info { flex: 1 1 100%; font-size: 11px; padding: 6px 9px; }
-            .domain-selector select { min-height: 42px; padding: 9px 12px; font-size: 13px; border-radius: 12px; }
-            .top-nav { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 12px; }
-            .nav-tab { width: 100%; min-height: 38px; padding: 8px 10px; border-radius: 10px; font-size: 13px; }
-            .card { border-radius: 16px; box-shadow: 0 1px 2px rgba(15,23,42,.05); }
-            .card.p-3, .card.p-4 { padding: 12px !important; }
+            body {
+                background: #f7f8fb;
+            }
 
-            #page-dashboard > .card.p-3 > .d-flex.justify-content-between.align-items-center.mb-3.flex-wrap.gap-2 {
-                display: grid !important;
-                grid-template-columns: 1fr;
-                gap: 10px !important;
-                margin-bottom: 10px !important;
+            .container {
+                padding-left: 12px;
+                padding-right: 12px;
             }
-            #page-dashboard > .card.p-3 > .d-flex.justify-content-between.align-items-center.mb-3.flex-wrap.gap-2 > h6 {
-                font-size: 15px;
-            }
-            #page-dashboard > .card.p-3 > .d-flex.justify-content-between.align-items-center.mb-3.flex-wrap.gap-2 > .d-flex.gap-2.align-items-center.flex-grow-1 {
-                display: grid !important;
-                grid-template-columns: minmax(0, 1fr) 56px 56px;
-                gap: 6px !important;
-                max-width: none !important;
-                width: 100%;
-            }
-            #lookup-domain, #manual-add-ip { min-width: 0 !important; width: 100% !important; }
-            #page-dashboard .btn { min-height: 34px; padding: 6px 9px; font-size: 12px; border-radius: 9px; }
-            #manual-add-section { margin-bottom: 10px !important; }
-            #manual-add-section .input-group {
-                display: grid !important;
-                grid-template-columns: minmax(0, 1fr) 60px;
-                gap: 6px;
-                width: 100%;
-            }
-            #manual-add-section .input-group > .form-control,
-            #manual-add-section .input-group > .btn {
-                border-radius: 9px !important;
-            }
-            #manual-add-section .btn { width: 60px; padding-left: 0; padding-right: 0; }
 
-            #status-display { max-height: none !important; overflow: visible !important; border: 0; background: transparent; }
-            #status-display > .status-desktop-wrap { display: none !important; }
-            #status-mobile-list { display: block; }
-            .status-mobile-list {
-                border: 1px solid #e5e7eb;
+            .hero {
+                padding: 18px 0 12px;
+            }
+
+            .hero h1 {
+                font-size: 1.45rem;
+                margin-bottom: 10px;
+                color: #0f172a;
+            }
+
+            .guide-toggle {
+                width: 30px;
+                height: 30px;
+                flex: 0 0 30px;
+            }
+
+            .config-info {
+                font-size: 11px;
+                line-height: 1.35;
+                padding: 8px 10px;
+                flex: 1 1 auto;
+            }
+
+            .domain-selector,
+            .domain-selector select {
+                width: 100%;
+                max-width: none;
+            }
+
+            .domain-selector select {
+                height: 46px;
                 border-radius: 14px;
-                overflow: hidden;
-                background: #fff;
+                font-size: 15px;
+                font-weight: 700;
+                padding: 10px 14px;
+                color: #0f172a;
+                background-color: #fff;
+                border: 1px solid #e2e8f0;
             }
-            .ip-mobile-item {
-                padding: 10px 10px 9px;
-                border-bottom: 1px solid #f1f5f9;
-                background: #fff;
-            }
-            .ip-mobile-item:last-child { border-bottom: 0; }
-            .ip-mobile-main {
+
+            .top-nav {
                 display: grid;
-                grid-template-columns: minmax(0, 1fr) auto auto;
-                align-items: center;
+                grid-template-columns: repeat(2, minmax(0, 1fr));
                 gap: 6px;
+                padding: 5px;
+                margin: 12px 0 16px;
+                background: #edf2f7;
+                border: 1px solid #e2e8f0;
+                border-radius: 16px;
             }
-            .ip-mobile-address {
-                min-width: 0;
-                padding: 0;
+
+            .nav-tab {
+                height: 40px;
+                padding: 0 10px;
+                border-radius: 12px;
                 border: 0;
                 background: transparent;
-                color: #111827;
-                font-family: 'SF Mono', Consolas, Monaco, monospace;
-                font-size: 13px;
+                color: #475569;
+                font-size: 14px;
                 font-weight: 700;
-                line-height: 1.35;
-                text-align: left;
+            }
+
+            .nav-tab.active {
+                background: #fff;
+                color: #2563eb;
+                border: 0;
+                box-shadow: 0 1px 4px rgba(15, 23, 42, .06);
+            }
+
+            .card {
+                border: 1px solid #e2e8f0;
+                border-radius: 18px;
+                box-shadow: 0 4px 18px rgba(15, 23, 42, .05);
+                margin-bottom: 16px;
+            }
+
+            .card.p-3,
+            .card.p-4 {
+                padding: 14px !important;
+            }
+
+            #page-dashboard > .card.p-3 > .d-flex.justify-content-between.align-items-center.mb-3.flex-wrap.gap-2 {
+                display: block !important;
+            }
+
+            #page-dashboard > .card.p-3 h6 {
+                font-size: 18px;
+                margin-bottom: 12px !important;
+            }
+
+            #page-dashboard > .card.p-3 > .d-flex.justify-content-between.align-items-center.mb-3.flex-wrap.gap-2 > .d-flex.gap-2.align-items-center.flex-grow-1 {
+                display: grid !important;
+                grid-template-columns: minmax(0, 1fr) 58px 58px;
+                gap: 8px !important;
+                width: 100% !important;
+                max-width: none !important;
+            }
+
+            #lookup-domain {
+                min-width: 0;
+                width: 100%;
+            }
+
+            #manual-add-section {
+                margin-bottom: 12px !important;
+            }
+
+            #manual-add-section .input-group {
+                display: grid !important;
+                grid-template-columns: minmax(0, 1fr) 64px;
+                gap: 8px;
+                align-items: center;
+                width: 100%;
+            }
+
+            #manual-add-section .form-control {
+                width: 100%;
+                min-width: 0;
+            }
+
+            .form-control,
+            .form-select {
+                height: 40px;
+                min-height: 40px;
+                padding: 8px 10px;
+                border: 1px solid #e2e8f0;
+                border-radius: 12px !important;
+                background: #f8fafc;
+                font-size: 13px;
+            }
+
+            .btn,
+            .btn-sm {
+                height: 40px;
+                min-height: 40px;
+                padding: 0 10px !important;
+                border-radius: 12px !important;
+                font-size: 13px !important;
+                font-weight: 700;
+                white-space: nowrap;
+            }
+
+            #status-display {
+                max-height: none !important;
+                overflow: visible !important;
+                border: 0 !important;
+                background: transparent !important;
+                border-radius: 0;
+            }
+
+            #status-display > .table-responsive {
+                display: none !important;
+            }
+
+            .status-mobile-list {
+                display: block;
+                background: #fff;
+                border: 1px solid #e2e8f0;
+                border-radius: 14px;
+                overflow: hidden;
+            }
+
+            .mobile-ip-message {
+                padding: 18px 12px;
+                color: #64748b;
+                text-align: center;
+                font-size: 13px;
+            }
+
+            .mobile-ip-item {
+                padding: 10px 12px 9px;
+                border-bottom: 1px solid #eef2f7;
+                background: #fff;
+            }
+
+            .mobile-ip-item:last-child {
+                border-bottom: 0;
+            }
+
+            .mobile-ip-main {
+                display: grid;
+                grid-template-columns: minmax(136px, 1fr) auto auto auto 24px;
+                gap: 5px;
+                align-items: center;
+                min-width: 0;
+            }
+
+            .mobile-ip-address {
+                min-width: 0;
+                color: #0f172a;
+                font-family: "SF Mono", Menlo, Consolas, monospace;
+                font-size: 13px;
+                font-weight: 800;
+                line-height: 24px;
                 white-space: nowrap;
                 overflow: visible;
-                text-overflow: clip;
+                letter-spacing: -0.04em;
             }
-            .ip-mobile-badges {
+
+            .mobile-chip {
                 display: inline-flex;
                 align-items: center;
-                justify-content: flex-end;
-                gap: 4px;
-                white-space: nowrap;
-            }
-            .ip-mobile-badges .latency-badge,
-            .ip-mobile-badges .status-badge,
-            .ip-mobile-badges .colo-badge {
-                display: inline-flex;
-                min-height: 20px;
-                align-items: center;
-                padding: 2px 6px;
-                font-size: 10px;
+                justify-content: center;
+                height: 22px;
+                min-width: 34px;
+                padding: 0 7px;
                 border-radius: 999px;
-                line-height: 1;
-            }
-            .ip-mobile-action { display: inline-flex; align-items: center; justify-content: flex-end; }
-            .ip-mobile-info { margin-top: 6px; padding-left: 0; }
-            .ip-mobile-subline {
-                display: flex;
-                align-items: center;
-                gap: 4px;
-                min-width: 0;
-                color: #64748b;
                 font-size: 11px;
-                line-height: 1.45;
+                font-weight: 800;
+                line-height: 1;
                 white-space: nowrap;
+            }
+
+            .mobile-chip.latency {
+                color: #1d4ed8;
+                background: #dbeafe;
+            }
+
+            .mobile-chip.status.ok {
+                color: #166534;
+                background: #dcfce7;
+            }
+
+            .mobile-chip.status.bad {
+                color: #991b1b;
+                background: #fee2e2;
+            }
+
+            .mobile-chip.colo {
+                color: #334155;
+                background: #e2e8f0;
+            }
+
+            .mobile-action {
+                display: inline-flex;
+                justify-content: flex-end;
+                align-items: center;
+                width: 24px;
+                height: 24px;
                 overflow: hidden;
             }
-            .ip-mobile-stack {
-                flex: 0 0 auto;
-                color: #475569;
-                font-weight: 700;
-                font-size: 10px;
-                padding: 1px 5px;
-                border-radius: 999px;
-                background: #f1f5f9;
+
+            .mobile-action a,
+            .mobile-action button {
+                display: inline-flex !important;
+                justify-content: center;
+                align-items: center;
+                width: 24px !important;
+                height: 24px !important;
+                min-height: 24px !important;
+                padding: 0 !important;
+                border: 0 !important;
+                background: transparent !important;
+                color: #dc2626 !important;
+                font-size: 13px !important;
+                text-decoration: none !important;
             }
-            .ip-mobile-dot { color: #cbd5e1; flex: 0 0 auto; }
-            .ip-mobile-subtext {
-                min-width: 0;
-                overflow: hidden;
-                text-overflow: ellipsis;
-            }
-            .ip-mobile-subtext.copyable { cursor: pointer; color: #334155; }
-            .status-mobile-empty {
-                padding: 18px 12px;
-                text-align: center;
+
+            .mobile-ip-sub {
+                margin-top: 5px;
+                padding-left: 10px;
+                border-left: 2px solid #e2e8f0;
                 color: #64748b;
-                font-size: 13px;
-                background: #fff;
-                border: 1px solid #e5e7eb;
-                border-radius: 14px;
+                font-size: 12px;
+                line-height: 1.45;
+                word-break: break-word;
+                overflow-wrap: anywhere;
             }
-            .status-mobile-empty-error { color: #dc2626; background: #fff7f7; border-color: #fecaca; }
+
+            .ip-info-tag,
+            .latency-badge,
+            .status-badge,
+            .colo-badge {
+                font-size: 11px;
+                padding: 4px 7px;
+                border-radius: 999px;
+            }
 
             .col-lg-7 > .card.p-4:first-child > .d-flex.justify-content-between.align-items-center.mb-3.flex-wrap.gap-2 {
                 display: grid !important;
                 grid-template-columns: 1fr;
-                gap: 8px !important;
+                gap: 10px !important;
             }
+
             .col-lg-7 > .card.p-4:first-child > .d-flex.justify-content-between.align-items-center.mb-3.flex-wrap.gap-2 > .d-flex.gap-1.align-items-center {
                 display: grid !important;
-                grid-template-columns: minmax(0, 1fr) 34px 34px 34px;
-                gap: 6px !important;
+                grid-template-columns: minmax(0, 1fr) 40px 40px 40px;
+                gap: 8px !important;
                 width: 100%;
             }
-            #pool-selector { width: 100% !important; }
+
+            #pool-selector {
+                width: 100% !important;
+            }
+
+            .col-lg-7 > .card.p-4:first-child > .d-flex.justify-content-between.align-items-center.mb-3.flex-wrap.gap-2 .btn {
+                width: 40px;
+                padding: 0 !important;
+            }
+
             .ip-content-area > .d-flex.gap-2.mb-2.align-items-center {
                 display: grid !important;
                 grid-template-columns: repeat(3, minmax(0, 1fr));
-                gap: 6px !important;
+                gap: 8px !important;
             }
-            .ip-content-area > .d-flex.gap-2.mb-2.align-items-center > #remote-url { grid-column: 1 / -1; }
-            #main-actions { display: grid !important; grid-template-columns: 1fr 1fr; gap: 6px !important; }
-            #main-actions .btn:last-child { grid-column: 1 / -1; }
-            .filter-line { grid-template-columns: minmax(0, 1fr) 34px !important; gap: 6px !important; }
-            .filter-line > .btn { margin-top: 6px; }
+
+            .ip-content-area > .d-flex.gap-2.mb-2.align-items-center > #remote-url {
+                grid-column: 1 / -1;
+            }
+
+            #ip-input {
+                min-height: 130px !important;
+                font-size: 12px !important;
+                line-height: 1.5;
+            }
+
+            .filter-line {
+                display: grid !important;
+                grid-template-columns: minmax(0, 1fr) 40px;
+                gap: 8px !important;
+            }
+
+            .filter-line .btn {
+                width: 100%;
+            }
+
+            .filter-line .btn:nth-of-type(2),
+            .filter-line .btn:nth-of-type(3),
+            .filter-line .btn:nth-of-type(4) {
+                margin-top: 8px;
+            }
+
+            #main-actions {
+                display: grid !important;
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+                gap: 8px !important;
+            }
+
+            #main-actions .btn:last-child {
+                grid-column: 1 / -1;
+            }
+
+            .table-responsive {
+                overflow-x: auto;
+            }
         }
-        @media (max-width: 380px) {
-            .ip-mobile-main { grid-template-columns: minmax(0, 1fr) auto; }
-            .ip-mobile-badges { grid-column: 1 / -1; justify-content: flex-start; }
-            .ip-mobile-action { grid-column: 2; grid-row: 1; }
-            .ip-mobile-address { white-space: normal; word-break: break-all; }
-            #page-dashboard > .card.p-3 > .d-flex.justify-content-between.align-items-center.mb-3.flex-wrap.gap-2 > .d-flex.gap-2.align-items-center.flex-grow-1 { grid-template-columns: minmax(0, 1fr) 50px 50px; }
+
+        @media (max-width: 390px) {
+            .mobile-ip-main {
+                grid-template-columns: minmax(120px, 1fr) auto auto auto 22px;
+                gap: 4px;
+            }
+
+            .mobile-ip-address {
+                font-size: 12px;
+            }
+
+            .mobile-chip {
+                min-width: 30px;
+                padding: 0 5px;
+                font-size: 10px;
+            }
         }
 
     </style>
@@ -3443,7 +3648,7 @@ function renderHTML(C, runtimeState = {}) {
         
         <!-- 统一展示区域 -->
         <div id="status-display" class="scroll-box" style="max-height:320px">
-            <div class="table-responsive status-desktop-wrap">
+            <div class="table-responsive">
                 <table class="table text-center mb-0 status-table">
                     <thead style="position:sticky;top:0;background:#fff;z-index:1">
                         <tr>
@@ -3458,7 +3663,7 @@ function renderHTML(C, runtimeState = {}) {
                     <tbody id="status-table"></tbody>
                 </table>
             </div>
-            <div id="status-mobile-list" class="status-mobile-list"></div>
+            <div id="status-mobile-list" class="status-mobile-list" aria-live="polite"></div>
             <div id="txt-status"></div>
         </div>
     </div>
@@ -4321,64 +4526,75 @@ function renderHTML(C, runtimeState = {}) {
     }
 
 
-    function getStatusMobileList() {
-        return document.getElementById('status-mobile-list');
-    }
+    function syncStatusMobileList() {
+        const table = document.getElementById('status-table');
+        const mobile = document.getElementById('status-mobile-list');
+        if (!table || !mobile) return;
 
-    function setStatusMobileMessage(message, type) {
-        const m = getStatusMobileList();
-        if (!m) return;
-        const cls = type ? ' status-mobile-empty-' + type : '';
-        m.innerHTML = '<div class="status-mobile-empty' + cls + '">' + escapeHTML(message || '') + '</div>';
-    }
-
-    function buildStatusActionLink(html) {
-        return '<span class="mobile-action-wrap">' + (html || '') + '</span>';
-    }
-
-    function formatExitMobileInfo(r) {
-        if (Array.isArray(r.exits) && r.exits.length > 0) {
-            const order = { ipv4: 0, v4: 0, ipv6: 1, v6: 1 };
-            const exits = [...r.exits].sort((a, b) => {
-                return (order[String(a.stack || '').toLowerCase()] ?? 9) - (order[String(b.stack || '').toLowerCase()] ?? 9);
-            });
-            return exits.map(exit => {
-                const stack = exit.stack ? String(exit.stack).toUpperCase() : 'EXIT';
-                const location = [exit.country, exit.city].filter(Boolean).join(' / ');
-                const network = [formatAsn(exit.asn), exit.asOrganization].filter(Boolean).join(' ');
-                const ip = exit.ip || '-';
-                const parts = [stack, ip, location || '-', network || '-'];
-                return '<div class="ip-mobile-subline">' + parts.map((item, idx) => {
-                    const cls = idx === 0 ? 'ip-mobile-stack' : 'ip-mobile-subtext';
-                    const copy = idx === 1 ? ' copyable' : '';
-                    const attr = idx === 1 ? ' onclick="copyText(\\'' + escapeJSString(ip) + '\\', \\'出口IP\\')" title="点击复制出口IP"' : '';
-                    return '<span class="' + cls + copy + '"' + attr + '>' + escapeHTML(item) + '</span>';
-                }).join('<span class="ip-mobile-dot">·</span>') + '</div>';
-            }).join('');
+        const rows = Array.from(table.querySelectorAll('tr'));
+        if (rows.length === 0) {
+            mobile.innerHTML = '';
+            return;
         }
-        if (r.ipInfo) {
-            const parts = ['IP信息'];
-            if (r.ipInfo.country) parts.push(r.ipInfo.country);
-            if (r.ipInfo.asn) parts.push(formatAsn(r.ipInfo.asn));
-            return '<div class="ip-mobile-subline muted">' + parts.map(item => '<span class="ip-mobile-subtext">' + escapeHTML(item) + '</span>').join('<span class="ip-mobile-dot">·</span>') + '</div>';
-        }
-        return '<div class="ip-mobile-subline muted"><span class="ip-mobile-subtext">无出口信息</span></div>';
+
+        mobile.innerHTML = rows.map(row => {
+            const cells = Array.from(row.children);
+            if (cells.length < 6) {
+                return '<div class="mobile-ip-message">' + escapeHTML(row.textContent.trim() || '暂无记录') + '</div>';
+            }
+
+            const ip = cells[0].textContent.trim();
+            const latency = cells[1].textContent.trim();
+            const status = cells[2].textContent.trim();
+            const exitText = summarizeExitCell(cells[3]);
+            const colo = cells[4].textContent.trim();
+            const actionHTML = cells[5].innerHTML || '';
+
+            const statusClass = status === '可用' ? 'ok' : 'bad';
+
+            return '<div class="mobile-ip-item">'
+                + '<div class="mobile-ip-main">'
+                + '<div class="mobile-ip-address" title="' + escapeHTML(ip) + '">' + escapeHTML(ip) + '</div>'
+                + '<span class="mobile-chip latency">' + escapeHTML(latency || '-') + '</span>'
+                + '<span class="mobile-chip status ' + statusClass + '">' + escapeHTML(status || '-') + '</span>'
+                + '<span class="mobile-chip colo">' + escapeHTML(colo || '-') + '</span>'
+                + '<span class="mobile-action">' + actionHTML + '</span>'
+                + '</div>'
+                + '<div class="mobile-ip-sub">' + escapeHTML(exitText || '-') + '</div>'
+                + '</div>';
+        }).join('');
     }
 
-    function renderIPMobileItem(r, actionHTML) {
-        const stateClass = r.success ? 'ok' : 'bad';
-        return '<div class="ip-mobile-item">'
-            + '<div class="ip-mobile-main">'
-            + '<button type="button" class="ip-mobile-address copyable" onclick="copyText(\\'' + escapeJSString(r.ip) + '\\', \\'维护地址\\')" title="点击复制">' + escapeHTML(r.ip) + '</button>'
-            + '<div class="ip-mobile-badges">'
-            + '<span class="latency-badge">' + escapeHTML(formatLatencyValue(r.time)) + '</span>'
-            + '<span class="status-badge ' + stateClass + '">' + (r.success ? '可用' : '失败') + '</span>'
-            + '<span class="colo-badge">' + escapeHTML(r.colo || 'N/A') + '</span>'
-            + '</div>'
-            + '<div class="ip-mobile-action">' + buildStatusActionLink(actionHTML) + '</div>'
-            + '</div>'
-            + '<div class="ip-mobile-info">' + formatExitMobileInfo(r) + '</div>'
-            + '</div>';
+    function summarizeExitCell(cell) {
+        if (!cell) return '';
+        const details = Array.from(cell.querySelectorAll('.exit-detail'));
+        if (details.length > 0) {
+            return details.map(detail => {
+                const stack = getNodeText(detail.querySelector('.exit-stack'));
+                const ip = getNodeText(detail.querySelector('.exit-ip'));
+                const fields = Array.from(detail.querySelectorAll('.exit-field')).map(getNodeText).filter(Boolean);
+                return [stack, ip].concat(fields).filter(Boolean).join(' · ');
+            }).filter(Boolean).join(' / ');
+        }
+        return cell.textContent.trim();
+    }
+
+    function getNodeText(node) {
+        return node ? String(node.textContent || '').trim() : '';
+    }
+
+    function initStatusMobileList() {
+        const table = document.getElementById('status-table');
+        if (!table) return;
+        const observer = new MutationObserver(syncStatusMobileList);
+        observer.observe(table, { childList: true });
+        syncStatusMobileList();
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', initStatusMobileList);
+    } else {
+        initStatusMobileList();
     }
 
     function switchDomain() {
@@ -4770,52 +4986,50 @@ function renderHTML(C, runtimeState = {}) {
     async function refreshStatus() {
         const t = document.getElementById('status-table');
         const txtDiv = document.getElementById('txt-status');
-        const m = getStatusMobileList();
-        const colspan = '6';
-        t.innerHTML = '<tr><td colspan="' + colspan + '" class="text-secondary p-4">🔄 查询中...</td></tr>';
-        if (m) setStatusMobileMessage('查询中...', 'loading');
+            const colspan = '6';
+        t.innerHTML = \`<tr><td colspan="\${colspan}" class="text-secondary p-4">🔄 查询中...</td></tr>\`;
         txtDiv.innerHTML = '';
         
         try {
-            const data = await apiFetch('/api/current-status?target=' + currentTargetIndex).then(r => r.json());
+            const data = await apiFetch(\`/api/current-status?target=\${currentTargetIndex}\`).then(r => r.json());
             
             if (data.error) {
-                t.innerHTML = '<tr><td colspan="' + colspan + '" class="text-danger p-4">❌ ' + escapeHTML(data.error) + '<br><small>请检查 CF_KEY, CF_ZONEID 配置</small></td></tr>';
-                setStatusMobileMessage(data.error + '，请检查 CF_KEY, CF_ZONEID 配置', 'error');
+                t.innerHTML = \`<tr><td colspan="\${colspan}" class="text-danger p-4">❌ \${escapeHTML(data.error)}<br><small>请检查 CF_KEY, CF_ZONEID 配置</small></td></tr>\`;
                 return;
             }
 
+            // 统一收集所有记录到表格中显示
             let allRows = [];
-            let mobileRows = [];
 
+            // 地址记录
             if (data.mode === 'A' && data.aRecords && data.aRecords.length > 0) {
                 data.aRecords.forEach(r => {
-                    const item = { ip: r.address || (r.ip + ':' + r.port), colo: r.colo, time: r.time, success: r.success, exits: r.exits, proxyIP: r.proxyIP, portRemote: r.portRemote, ipInfo: r.ipInfo };
-                    const action = '<a href="javascript:deleteRecord(\\'' + escapeJSString(r.id) + '\\')" class="text-danger text-decoration-none small fw-bold" title="删除">🗑️</a>';
-                    allRows.push(renderIPRow(item, action));
-                    mobileRows.push(renderIPMobileItem(item, action));
+                    allRows.push(renderIPRow(
+                        { ip: r.address || (r.ip + ':' + r.port), colo: r.colo, time: r.time, success: r.success, exits: r.exits, proxyIP: r.proxyIP, portRemote: r.portRemote, ipInfo: r.ipInfo },
+                        \`<a href="javascript:deleteRecord('\${escapeJSString(r.id)}')" class="text-danger text-decoration-none small fw-bold">🗑️</a>\`
+                    ));
                 });
             }
 
+            // TXT记录（统一显示在表格中）
             if (data.mode === 'TXT' && data.txtRecords && data.txtRecords.length > 0) {
                 const record = data.txtRecords[0];
                 record.ips.forEach(ip => {
-                    const action = '<a href="javascript:deleteTxtIP(\\'' + escapeJSString(record.id) + '\\', \\'' + escapeJSString(ip.ip) + '\\')" class="text-danger text-decoration-none small fw-bold" title="删除">🗑️</a>';
-                    allRows.push(renderIPRow(ip, action));
-                    mobileRows.push(renderIPMobileItem(ip, action));
+                    allRows.push(renderIPRow(
+                        ip,
+                        \`<a href="javascript:deleteTxtIP('\${escapeJSString(record.id)}', '\${escapeJSString(ip.ip)}')" class="text-danger text-decoration-none small fw-bold">🗑️</a>\`
+                    ));
                 });
             }
             
+            // 显示结果
             if (allRows.length === 0) {
-                t.innerHTML = '<tr><td colspan="' + colspan + '" class="text-secondary p-4">暂无记录</td></tr>';
-                setStatusMobileMessage('暂无记录', 'empty');
+                t.innerHTML = \`<tr><td colspan="\${colspan}" class="text-secondary p-4">暂无记录</td></tr>\`;
             } else {
                 t.innerHTML = allRows.join('');
-                if (m) m.innerHTML = mobileRows.join('');
             }
         } catch (e) {
-            t.innerHTML = '<tr><td colspan="' + colspan + '" class="text-danger p-4">❌ 查询失败<br><small>请检查网络连接和CF配置</small></td></tr>';
-            setStatusMobileMessage('查询失败，请检查网络连接和 CF 配置', 'error');
+            t.innerHTML = \`<tr><td colspan="\${colspan}" class="text-danger p-4">❌ 查询失败<br><small>请检查网络连接和CF配置</small></td></tr>\`;
         }
     }
     
@@ -4861,83 +5075,72 @@ function renderHTML(C, runtimeState = {}) {
             return;
         }
         
-        log('🔍 探测: ' + val, 'info');
+        log(\`🔍 探测: \${val}\`, 'info');
         
         const t = document.getElementById('status-table');
         const txtDiv = document.getElementById('txt-status');
-        const m = getStatusMobileList();
         const colspan = '6';
-        t.innerHTML = '<tr><td colspan="' + colspan + '" class="text-secondary p-4">🔄 探测中...</td></tr>';
-        if (m) setStatusMobileMessage('探测中...', 'loading');
+        t.innerHTML = \`<tr><td colspan="\${colspan}" class="text-secondary p-4">🔄 探测中...</td></tr>\`;
         txtDiv.innerHTML = '';
         
         try {
             if (val.startsWith('txt@')) {
-                const data = await apiFetch('/api/lookup-domain?domain=' + encodeURIComponent(val)).then(r => r.json());
+                const data = await apiFetch(\`/api/lookup-domain?domain=\${encodeURIComponent(val)}\`).then(r => r.json());
                 
+                // null 检查
                 if (!data.ips || !Array.isArray(data.ips)) {
-                    log('❌ TXT 查询失败', 'error');
-                    t.innerHTML = '<tr><td colspan="' + colspan + '" class="text-danger p-4">❌ TXT 查询失败</td></tr>';
-                    setStatusMobileMessage('TXT 查询失败', 'error');
+                    log(\`❌ TXT 查询失败\`, 'error');
+                    t.innerHTML = \`<tr><td colspan="\${colspan}" class="text-danger p-4">❌ TXT 查询失败</td></tr>\`;
                     return;
                 }
                 
-                log('📝 TXT: ' + data.ips.length + ' 个IP', 'success');
+                log(\`📝 TXT: \${data.ips.length} 个IP\`, 'success');
+                
+                // 并发检测（与地址记录探测统一模板）
                 const checkResults = await Promise.all(data.ips.map(ip => checkIPWithInfo(ip)));
-                const desktopRows = [];
-                const mobileRows = [];
-                checkResults.forEach(r => {
-                    const line = buildPoolLineFromCheckResult(r.ip, r);
-                    const action = '<button class="btn btn-sm btn-outline-primary" onclick="addToInput(\\'' + escapeJSString(line) + '\\')" title="添加到输入框">添加</button>';
-                    desktopRows.push(renderIPRow(r, action));
-                    mobileRows.push(renderIPMobileItem(r, action));
-                });
-                t.innerHTML = desktopRows.join('');
-                if (m) m.innerHTML = mobileRows.join('');
+
+                // 显示在表格中（与地址记录探测统一模板）
+                t.innerHTML = checkResults.map(r => renderIPRow(r,
+                    \`<button class="btn btn-sm btn-outline-primary" onclick="addToInput('\${escapeHTML(buildPoolLineFromCheckResult(r.ip, r))}')" title="添加到输入框">➕</button>\`
+                )).join('');
                 
                 const activeCount = checkResults.filter(r => r.success).length;
-                log('📊 探测完成: ' + activeCount + '/' + data.ips.length + ' 活跃', activeCount === data.ips.length ? 'success' : (activeCount > 0 ? 'warn' : 'error'));
+                log(\`📊 探测完成: \${activeCount}/\${data.ips.length} 活跃\`, activeCount === data.ips.length ? 'success' : (activeCount > 0 ? 'warn' : 'error'));
                 return;
             }
             
-            const isIP = /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}(:\d+)?$/.test(val) || /^\[[0-9a-fA-F:]+\](:\d+)?$/.test(val) || (/^[0-9a-fA-F:]+$/.test(val) && val.includes(':'));
+            const isIP = /^\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}(:\\d+)?$/.test(val) || /^\\[[0-9a-fA-F:]+\\](:\\d+)?$/.test(val) || (/^[0-9a-fA-F:]+$/.test(val) && val.includes(':'));
             let targets = [];
             
             if (isIP) {
                 const normalized = normalizeIPFormat(val);
                 targets = [normalized ? getPoolEntryKey(normalized) : val];
             } else {
-                const data = await apiFetch('/api/lookup-domain?domain=' + encodeURIComponent(val)).then(r => r.json());
+                const data = await apiFetch(\`/api/lookup-domain?domain=\${encodeURIComponent(val)}\`).then(r => r.json());
                 
                 if (!data.ips || !Array.isArray(data.ips) || data.ips.length === 0) {
-                    log('⚠️ 域名无A/AAAA记录', 'warn');
-                    t.innerHTML = '<tr><td colspan="' + colspan + '" class="text-secondary p-4">域名无A/AAAA记录</td></tr>';
-                    setStatusMobileMessage('域名无 A/AAAA 记录', 'empty');
+                    log(\`⚠️ 域名无A/AAAA记录\`, 'warn');
+                    t.innerHTML = \`<tr><td colspan="\${colspan}" class="text-secondary p-4">域名无A/AAAA记录</td></tr>\`;
                     return;
                 }
                 
-                targets = data.ips.map(ip => ip.includes(':') ? '[' + ip.replace(/^\[/, '').replace(/\]$/, '') + ']:' + (data.port || '443') : ip + ':' + (data.port || '443'));
-                log('📡 ' + data.ips.length + ' 个IP (端口: ' + (data.port || '443') + ')', 'success');
+                targets = data.ips.map(ip => ip.includes(':') ? \`[\${ip.replace(/^\\[/, '').replace(/\\]$/, '')}]:\${data.port || '443'}\` : \`\${ip}:\${data.port || '443'}\`);
+                log(\`📡 \${data.ips.length} 个IP (端口: \${data.port || '443'})\`, 'success');
             }
             
+            // 并发检测
             const checkResults = await Promise.all(targets.map(addr => checkIPWithInfo(addr)));
-            const desktopRows = [];
-            const mobileRows = [];
-            checkResults.forEach(r => {
-                const line = buildPoolLineFromCheckResult(r.ip, r);
-                const action = '<button class="btn btn-sm btn-outline-primary" onclick="addToInput(\\'' + escapeJSString(line) + '\\')" title="添加到输入框">添加</button>';
-                desktopRows.push(renderIPRow(r, action));
-                mobileRows.push(renderIPMobileItem(r, action));
-            });
-            t.innerHTML = desktopRows.join('');
-            if (m) m.innerHTML = mobileRows.join('');
+
+            // 显示在表格中
+            t.innerHTML = checkResults.map(r => renderIPRow(r,
+                \`<button class="btn btn-sm btn-outline-primary" onclick="addToInput('\${escapeHTML(buildPoolLineFromCheckResult(r.ip, r))}')" title="添加到输入框">➕</button>\`
+            )).join('');
             
             const activeCount = checkResults.filter(r => r.success).length;
-            log('📊 探测完成: ' + activeCount + '/' + targets.length + ' 活跃', activeCount === targets.length ? 'success' : (activeCount > 0 ? 'warn' : 'error'));
+            log(\`📊 探测完成: \${activeCount}/\${targets.length} 活跃\`, activeCount === targets.length ? 'success' : (activeCount > 0 ? 'warn' : 'error'));
         } catch (e) {
-            log('❌ 失败: ' + e.message, 'error');
-            t.innerHTML = '<tr><td colspan="' + colspan + '" class="text-danger p-4">❌ 探测失败</td></tr>';
-            setStatusMobileMessage('探测失败', 'error');
+            log(\`❌ 失败: \${e.message}\`, 'error');
+            t.innerHTML = \`<tr><td colspan="\${colspan}" class="text-danger p-4">❌ 探测失败</td></tr>\`;
         }
     }
     
