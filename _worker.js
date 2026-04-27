@@ -3829,6 +3829,418 @@ function renderHTML(C, runtimeState = {}) {
                 font-size: 13px;
             }
         }
+
+
+        /* ===== 现代化轻量主题覆盖（第二版） ===== */
+        :root {
+            --primary: #2563eb;
+            --success: #16a34a;
+            --warning: #f59e0b;
+            --danger: #ef4444;
+            --bg: #f6f8fb;
+            --card: #ffffff;
+            --text: #0f172a;
+            --secondary: #64748b;
+            --line: #e2e8f0;
+            --line-strong: #cbd5e1;
+            --field: #f8fafc;
+            --field-focus: #ffffff;
+            --shadow: 0 8px 28px rgba(15, 23, 42, .06);
+            --shadow-soft: 0 4px 16px rgba(15, 23, 42, .05);
+            --radius-lg: 18px;
+            --radius-md: 12px;
+        }
+        html {
+            background: linear-gradient(180deg, #f8fafc 0%, #f3f6fb 100%) !important;
+        }
+        body {
+            background: linear-gradient(180deg, #f8fafc 0%, #f3f6fb 100%) !important;
+            color: var(--text) !important;
+        }
+        body::before {
+            display: none !important;
+        }
+        .container {
+            max-width: 1120px !important;
+            padding-left: 16px !important;
+            padding-right: 16px !important;
+        }
+        .hero {
+            padding: 22px 0 12px !important;
+        }
+        .hero h1 {
+            color: #0f172a !important;
+            font-size: clamp(1.28rem, 4vw, 1.92rem) !important;
+            font-weight: 800 !important;
+            letter-spacing: -.03em !important;
+            margin-bottom: 10px !important;
+        }
+        .hero-actions {
+            gap: 8px !important;
+            margin-bottom: 10px !important;
+        }
+        .github-corner {
+            opacity: .7;
+        }
+        .github-corner svg {
+            fill: #cbd5e1 !important;
+            color: #fff !important;
+        }
+        .guide-toggle,
+        .filter-help-btn,
+        .config-info,
+        .usage-guide,
+        .filter-help,
+        .filter-preview,
+        .custom-modal-stats,
+        .domain-selector select {
+            background: #ffffff !important;
+            border-color: var(--line) !important;
+            color: var(--secondary) !important;
+            box-shadow: none !important;
+            backdrop-filter: none !important;
+        }
+        .usage-guide code,
+        .filter-help code {
+            color: #1d4ed8 !important;
+            background: #eff6ff !important;
+        }
+        .kv-alert {
+            border-color: #fecaca !important;
+            background: #fef2f2 !important;
+            color: #b91c1c !important;
+        }
+        .card,
+        .custom-modal,
+        .config-mini-card,
+        .config-edit-panel {
+            background: #ffffff !important;
+            border: 1px solid var(--line) !important;
+            box-shadow: var(--shadow) !important;
+            backdrop-filter: none !important;
+            border-radius: 18px !important;
+        }
+        .card::before,
+        .custom-modal::before,
+        .config-mini-card::before,
+        .config-edit-panel::before {
+            display: none !important;
+        }
+        h6,
+        .field > span,
+        .config-mini-card h5,
+        .filter-preview strong,
+        .custom-modal-title,
+        .custom-modal-stats .value,
+        .text-dark,
+        .exit-ip,
+        .copyable:hover {
+            color: #0f172a !important;
+        }
+        .text-secondary,
+        .field > small,
+        .config-mini-card .meta,
+        .switch-row label,
+        .custom-modal-content,
+        .custom-modal-stats .label {
+            color: var(--secondary) !important;
+        }
+        .bg-light {
+            background-color: #f8fafc !important;
+        }
+        .domain-selector select {
+            padding: 10px 12px !important;
+            font-size: 14px !important;
+            font-weight: 700 !important;
+            border-radius: 14px !important;
+        }
+        .form-control,
+        .form-select,
+        textarea.form-control {
+            background: var(--field) !important;
+            border: 1px solid var(--line) !important;
+            color: var(--text) !important;
+            min-height: 40px !important;
+            padding: 10px 12px !important;
+            font-size: 14px !important;
+            box-shadow: none !important;
+        }
+        textarea.form-control,
+        #ip-input {
+            min-height: 108px !important;
+        }
+        .form-control::placeholder {
+            color: #94a3b8 !important;
+        }
+        .form-control:focus,
+        .form-select:focus {
+            background: #ffffff !important;
+            border-color: #93c5fd !important;
+            box-shadow: 0 0 0 3px rgba(37, 99, 235, .12) !important;
+        }
+        .btn,
+        .custom-modal-buttons button {
+            min-height: 36px !important;
+            padding: 8px 12px !important;
+            border-radius: 12px !important;
+            font-size: 13px !important;
+            font-weight: 700 !important;
+            box-shadow: none !important;
+        }
+        .btn:hover,
+        .custom-modal-buttons button:hover {
+            transform: none !important;
+            box-shadow: var(--shadow-soft) !important;
+        }
+        .btn-primary,
+        .nav-tab.active,
+        .custom-modal-buttons .btn-continue {
+            background: #2563eb !important;
+            border-color: #2563eb !important;
+            color: #ffffff !important;
+        }
+        .btn-success {
+            background: #22c55e !important;
+            border-color: #22c55e !important;
+            color: #ffffff !important;
+        }
+        .btn-danger {
+            background: #ef4444 !important;
+            border-color: #ef4444 !important;
+            color: #ffffff !important;
+        }
+        .btn-info {
+            background: #38bdf8 !important;
+            border-color: #38bdf8 !important;
+            color: #ffffff !important;
+        }
+        .btn-dark {
+            background: #0f172a !important;
+            border-color: #0f172a !important;
+            color: #ffffff !important;
+        }
+        .btn-outline-primary,
+        .btn-outline-secondary,
+        .btn-outline-success,
+        .btn-outline-danger,
+        .nav-tab,
+        .custom-modal-buttons .btn-abandon {
+            background: #ffffff !important;
+            border: 1px solid var(--line) !important;
+            color: #334155 !important;
+        }
+        .btn-outline-primary:hover,
+        .btn-outline-secondary:hover,
+        .btn-outline-success:hover,
+        .btn-outline-danger:hover,
+        .nav-tab:hover,
+        .custom-modal-buttons .btn-abandon:hover {
+            background: #f8fafc !important;
+            color: #0f172a !important;
+        }
+        .top-nav {
+            gap: 8px !important;
+            margin-bottom: 14px !important;
+        }
+        .nav-tab {
+            min-height: 36px !important;
+            padding: 7px 14px !important;
+            font-size: 14px !important;
+            border-radius: 12px !important;
+        }
+        .table-responsive,
+        .scroll-box,
+        .exit-list-cell {
+            border: 1px solid var(--line) !important;
+            background: #ffffff !important;
+            border-radius: 16px !important;
+        }
+        .table {
+            font-size: 13px !important;
+        }
+        .table th {
+            color: #64748b !important;
+            background: #f8fafc !important;
+            border-bottom: 1px solid var(--line) !important;
+            padding: 12px 10px !important;
+            font-size: 12px !important;
+            white-space: nowrap;
+        }
+        .table td {
+            color: #0f172a !important;
+            border-top: 1px solid #eef2f7 !important;
+            padding: 12px 10px !important;
+            white-space: nowrap;
+        }
+        .table tr:hover td {
+            background: #f8fbff !important;
+        }
+        .badge,
+        .status-badge,
+        .latency-badge,
+        .colo-badge,
+        .ip-info-tag,
+        .exit-stack {
+            font-size: 11px !important;
+            padding: 4px 8px !important;
+            border-radius: 999px !important;
+            border: 1px solid transparent !important;
+        }
+        .status-badge.ok {
+            color: #166534 !important;
+            background: #dcfce7 !important;
+        }
+        .status-badge.bad {
+            color: #b91c1c !important;
+            background: #fee2e2 !important;
+        }
+        .latency-badge {
+            color: #1d4ed8 !important;
+            background: #dbeafe !important;
+        }
+        .colo-badge {
+            color: #475569 !important;
+            background: #e2e8f0 !important;
+        }
+        .ip-info-tag {
+            color: #0f766e !important;
+            background: #ccfbf1 !important;
+        }
+        .exit-stack {
+            color: #6d28d9 !important;
+            background: #ede9fe !important;
+        }
+        .exit-detail {
+            border-bottom-color: #eef2f7 !important;
+        }
+        .console {
+            background: #0f172a !important;
+            color: #86efac !important;
+            border: none !important;
+            box-shadow: inset 0 1px 0 rgba(255,255,255,.03) !important;
+        }
+        .console::-webkit-scrollbar-thumb,
+        .scroll-box::-webkit-scrollbar-thumb,
+        .table-responsive::-webkit-scrollbar-thumb,
+        .exit-list-cell::-webkit-scrollbar-thumb {
+            background: #cbd5e1 !important;
+        }
+        .progress {
+            border-color: var(--line) !important;
+            background: #eef2f7 !important;
+        }
+        .progress-bar {
+            background: linear-gradient(90deg, #22c55e, #3b82f6) !important;
+        }
+        .switch-row label {
+            background: #ffffff !important;
+            border: 1px solid var(--line) !important;
+            border-radius: 12px !important;
+        }
+        .switch-slider {
+            background: #cbd5e1 !important;
+        }
+        .custom-modal-overlay {
+            background: rgba(15, 23, 42, .22) !important;
+            backdrop-filter: blur(4px);
+        }
+        @media (max-width: 768px) {
+            .container {
+                padding-left: 12px !important;
+                padding-right: 12px !important;
+            }
+            .hero {
+                padding: 16px 0 10px !important;
+            }
+            .hero h1 {
+                font-size: 1.42rem !important;
+            }
+            .card.p-3,
+            .card.p-4,
+            .custom-modal {
+                padding: 12px !important;
+            }
+            .btn,
+            .custom-modal-buttons button {
+                min-height: 34px !important;
+                padding: 7px 10px !important;
+                font-size: 12px !important;
+                border-radius: 10px !important;
+            }
+            .nav-tab {
+                min-height: 34px !important;
+                padding: 7px 12px !important;
+                font-size: 13px !important;
+                border-radius: 10px !important;
+            }
+            .form-control,
+            .form-select,
+            textarea.form-control {
+                min-height: 38px !important;
+                padding: 9px 10px !important;
+                font-size: 13px !important;
+            }
+            #ip-input {
+                min-height: 96px !important;
+            }
+            .table {
+                font-size: 12px !important;
+            }
+            .table th,
+            .table td {
+                padding: 10px 8px !important;
+                font-size: 12px !important;
+            }
+            .badge,
+            .status-badge,
+            .latency-badge,
+            .colo-badge,
+            .ip-info-tag,
+            .exit-stack {
+                font-size: 10px !important;
+                padding: 3px 7px !important;
+            }
+            .console {
+                height: 220px !important;
+                font-size: 11px !important;
+                padding: 12px !important;
+            }
+            .config-mini-card h5 {
+                font-size: 15px !important;
+            }
+            .top-nav {
+                margin-bottom: 12px !important;
+            }
+        }
+        @media (max-width: 430px) {
+            .container {
+                padding-left: 10px !important;
+                padding-right: 10px !important;
+            }
+            .hero h1 {
+                font-size: 1.28rem !important;
+            }
+            .nav-tab {
+                flex: 1 1 auto;
+                text-align: center;
+            }
+            .btn,
+            .custom-modal-buttons button {
+                min-height: 32px !important;
+                padding: 6px 10px !important;
+                font-size: 12px !important;
+            }
+            .table th,
+            .table td {
+                padding: 9px 7px !important;
+                font-size: 11px !important;
+            }
+            .usage-guide,
+            .config-info {
+                font-size: 11px !important;
+            }
+        }
+
     </style>
 </head>
 <body class="pb-5">
