@@ -5304,14 +5304,14 @@ function renderHTML(C, runtimeState = {}) {
 
     function renderIPRow(r, actionHTML) {
         const infoHtml = formatExitInfo(r.exits) || (r.ipInfo ? formatIPInfo(r.ipInfo) : '-');
-        return `<tr class="status-row">
-            <td data-label="目标地址" class="fw-bold copyable status-primary-cell" onclick="copyText('${escapeJSString(r.ip)}', '维护地址')" title="点击复制">${escapeHTML(r.ip)}</td>
-            <td data-label="延迟"><span class="latency-badge" title="来自后端检测 API 返回的 responseTime，不是浏览器到节点的延迟">${escapeHTML(formatLatencyValue(r.time))}</span></td>
-            <td data-label="状态"><span class="status-badge ${r.success?'ok':'bad'}">${r.success?'可用':'失败'}</span></td>
-            <td data-label="出口信息" class="exit-list-cell">${infoHtml}</td>
-            <td data-label="Colo"><span class="colo-badge" title="Cloudflare 机房 / colo">${escapeHTML(r.colo || 'N/A')}</span></td>
-            <td data-label="操作" class="status-action-cell">${actionHTML}</td>
-        </tr>`;
+        return \`<tr class="status-row">
+            <td data-label="目标地址" class="fw-bold copyable status-primary-cell" onclick="copyText('\${escapeJSString(r.ip)}', '维护地址')" title="点击复制">\${escapeHTML(r.ip)}</td>
+            <td data-label="延迟"><span class="latency-badge" title="来自后端检测 API 返回的 responseTime，不是浏览器到节点的延迟">\${escapeHTML(formatLatencyValue(r.time))}</span></td>
+            <td data-label="状态"><span class="status-badge \${r.success?'ok':'bad'}">\${r.success?'可用':'失败'}</span></td>
+            <td data-label="出口信息" class="exit-list-cell">\${infoHtml}</td>
+            <td data-label="Colo"><span class="colo-badge" title="Cloudflare 机房 / colo">\${escapeHTML(r.colo || 'N/A')}</span></td>
+            <td data-label="操作" class="status-action-cell">\${actionHTML}</td>
+        </tr>\`;
     }
 
     function switchDomain() {
