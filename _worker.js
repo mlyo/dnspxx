@@ -3,7 +3,7 @@
  * Frontend is deployed as remote static assets; Worker serves it through same-origin proxy.
  */
 
-const VERSION = '27.0.0-check-card';
+const VERSION = '29.0.0-source-tag-country';
 const JSON_TYPE = 'application/json; charset=UTF-8';
 const CHECK_CACHE_KEY = 'check_cache_v2';
 const CHECK_FAIL_KEY = 'check_fail_v2';
@@ -29,7 +29,13 @@ const DEFAULTS = Object.freeze({
   maxRemoteBytes: 1024 * 1024,
   maxTrashSize: 1000,
   failThreshold: 3,
+  sourceMaxCandidates: 500,
+  sourceImportLimit: 80,
+  sourceTargetPerCountry: 30,
+  sourceDefaultPort: 443,
 });
+
+const SOURCE_REFRESH_KEY = 'source_refresh_v1';
 
 const SYSTEM_POOLS = new Set(['pool', 'pool_trash']);
 const MODE_LABELS = { A: 'A记录', TXT: 'TXT记录', ALL: 'A+TXT' };
@@ -65,6 +71,57 @@ function safeJSONParse(value, fallback) {
 
 async function readJson(request) {
   try { return await request.json(); } catch { return null; }
+}
+
+
+function splitSourceUrls(raw) {
+  return String(raw || '')
+    .split(/[\r\n,;]+/)
+    .map(s => s.trim())
+    .filter(Boolean);
+}
+
+function normalizeCountry(value) {
+  return String(value || '').trim().toUpperCase().replace(/[^A-Z0-9_-]/g, '').slice(0, 16);
+}
+
+function parseSourceRules(env) {
+  const rules = [];
+  const pushRule = (rule, fallbackId = '') => {
+    const urls = Array.isArray(rule?.urls) ? rule.urls : splitSourceUrls(rule?.url || rule?.urls || '');
+    const cleanUrls = urls.map(u => String(u || '').trim()).filter(Boolean);
+    if (!cleanUrls.length) return;
+    const country = normalizeCountry(rule?.country || rule?.region || '');
+    const id = String(rule?.id || rule?.name || fallbackId || country || `source_${rules.length + 1}`).trim();
+    rules.push({
+      id,
+      country,
+      pool: String(rule?.pool || '').trim(),
+      urls: cleanUrls,
+    });
+  };
+
+  const jsonRules = safeJSONParse(envText(env, 'SOURCE_RULES'), null);
+  if (Array.isArray(jsonRules)) jsonRules.forEach((rule, idx) => pushRule(rule, `json_${idx + 1}`));
+
+  const allUrls = splitSourceUrls(envText(env, 'SOURCE_URLS'));
+  if (allUrls.length) pushRule({ id: 'all', urls: allUrls }, 'all');
+
+  for (const [key, value] of Object.entries(env || {})) {
+    const m = key.match(/^SOURCE_URLS_([A-Z0-9_-]{2,16})$/i);
+    if (!m || typeof value !== 'string') continue;
+    const country = normalizeCountry(m[1]);
+    const pool = envText(env, `SOURCE_POOL_${country}`);
+    pushRule({ id: country.toLowerCase(), country, pool, urls: splitSourceUrls(value) }, country.toLowerCase());
+  }
+
+  const seen = new Set();
+  return rules.filter(rule => {
+    const key = `${rule.id}|${rule.country}|${rule.urls.join(',')}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 async function fetchWithTimeout(url, options = {}, timeout = 8000) {
@@ -119,6 +176,12 @@ function createConfig(env, request = null) {
     allowedOrigins: envText(env, 'ALLOWED_ORIGINS'),
     targets: parseTargets(envText(env, 'CF_DOMAIN'), toInt(env?.DEFAULT_MIN_ACTIVE, DEFAULTS.defaultMinActive, 1, 200)),
     projectUrl: request ? new URL(request.url).origin : '',
+    sourceRules: parseSourceRules(env),
+    sourceMaxCandidates: toInt(env?.SOURCE_MAX_CANDIDATES, DEFAULTS.sourceMaxCandidates, 1, 5000),
+    sourceImportLimit: toInt(env?.SOURCE_IMPORT_LIMIT, DEFAULTS.sourceImportLimit, 1, 1000),
+    sourceTargetPerCountry: toInt(env?.SOURCE_TARGET_PER_COUNTRY, DEFAULTS.sourceTargetPerCountry, 1, 500),
+    sourceDefaultPort: String(toInt(env?.SOURCE_DEFAULT_PORT, DEFAULTS.sourceDefaultPort, 1, 65535)),
+    sourceAutoRefresh: toBool(env?.SOURCE_AUTO_REFRESH, false),
   };
   return Object.freeze(config);
 }
@@ -1010,7 +1073,7 @@ async function handleHealth(env, config) {
   return ok({ ok: true, version: VERSION, kv, kvBinding: binding.name, targets: config.targets.length, timestamp: nowISO() });
 }
 async function handleConfig(env, config) {
-  return ok({ version: VERSION, targets: config.targets, settings: { checkConcurrency: config.checkConcurrency, checkBatchSize: config.checkBatchSize, maxCheckPerDomain: config.maxCheckPerDomain, failThreshold: config.failThreshold, removeFailedImmediately: config.removeFailedImmediately, removeUnhealthyWithoutReplacement: config.removeUnhealthyWithoutReplacement }, authEnabled: !!config.authKey });
+  return ok({ version: VERSION, targets: config.targets, settings: { checkConcurrency: config.checkConcurrency, checkBatchSize: config.checkBatchSize, maxCheckPerDomain: config.maxCheckPerDomain, failThreshold: config.failThreshold, removeFailedImmediately: config.removeFailedImmediately, removeUnhealthyWithoutReplacement: config.removeUnhealthyWithoutReplacement, sourceRules: config.sourceRules.length, sourceAutoRefresh: config.sourceAutoRefresh }, authEnabled: !!config.authKey });
 }
 async function handlePools(env) {
   const store = requireKV(env);
@@ -1158,6 +1221,175 @@ async function handleMappingSave(request, env) {
   await setMapping(env, normalized);
   return ok({ mapping: normalized });
 }
+
+function getCheckExits(row) {
+  const raw = row?.raw || row || {};
+  const probe = raw.probe_results || {};
+  const exits = [];
+  for (const key of ['ipv4', 'ipv6']) {
+    const exit = probe?.[key]?.exit;
+    if (exit && typeof exit === 'object') exits.push({ ...exit, stack: key });
+  }
+  if (!exits.length && (row?.exitIP || row?.country || row?.asn)) {
+    exits.push({ ip: row.exitIP, country: row.country, city: row.city, asn: row.asn, asOrganization: row.org });
+  }
+  return exits.filter(Boolean);
+}
+
+function countryFromCheck(row, fallback = '') {
+  const exits = getCheckExits(row);
+  const found = exits.map(e => normalizeCountry(e.country || e.countryCode)).find(Boolean);
+  return found || normalizeCountry(row?.country) || normalizeCountry(fallback);
+}
+
+function cityFromCheck(row) {
+  const e = getCheckExits(row)[0] || {};
+  return String(e.city || row?.city || '').trim();
+}
+
+function orgFromCheck(row) {
+  const e = getCheckExits(row)[0] || {};
+  return String(e.asOrganization || e.org || row?.org || '').replace(/^AS\d+\s+/i, '').trim();
+}
+
+function asnFromCheck(row) {
+  const e = getCheckExits(row)[0] || {};
+  const asn = e.asn ?? row?.asn ?? '';
+  return asn ? `AS${asn}` : '';
+}
+
+function sourcePoolKey(rule, country) {
+  if (rule?.pool) return normalizePoolKey(rule.pool);
+  return country ? normalizePoolKey(country.toLowerCase()) : 'pool';
+}
+
+function sourceComment(row, rule, country) {
+  const tag = normalizeCountry(country || rule?.country || '');
+  return tag ? `# ${tag}` : '# source';
+}
+
+async function loadSourceRuleCandidates(rule, config) {
+  const entries = [];
+  const errors = [];
+  for (const rawUrl of rule.urls || []) {
+    let u;
+    try { u = new URL(rawUrl); } catch { errors.push({ url: rawUrl, error: 'URL 无效' }); continue; }
+    if (!['http:', 'https:'].includes(u.protocol)) { errors.push({ url: rawUrl, error: '仅支持 http/https' }); continue; }
+    try {
+      const res = await fetchWithTimeout(u.toString(), { headers: { 'User-Agent': 'DDNS-Pro-Source/29' }, cf: { cacheTtl: 0 } }, config.remoteTimeout);
+      if (!res.ok) { errors.push({ url: rawUrl, error: `HTTP ${res.status}` }); continue; }
+      const text = (await res.text()).slice(0, config.maxRemoteBytes);
+      entries.push(...extractRemoteEntries(text, { port: config.sourceDefaultPort, country: rule.country, format: 'auto' }));
+    } catch (e) {
+      errors.push({ url: rawUrl, error: e.message || '加载失败' });
+    }
+  }
+  const map = new Map();
+  for (const entry of entries) {
+    const addr = normalizeAddr(entry?.addr || entry);
+    if (!addr || map.has(addr)) continue;
+    map.set(addr, { addr, country: normalizeCountry(entry?.country || rule.country || ''), comment: entry?.comment || '' });
+  }
+  const normalized = Array.from(map.values()).slice(0, config.sourceMaxCandidates);
+  return { entries: normalized, candidates: normalized.map(e => e.addr), meta: Object.fromEntries(normalized.map(e => [e.addr, e])), errors };
+}
+
+async function mergeLinesIntoPool(env, poolKey, lines) {
+  const store = requireKV(env);
+  const current = await store.get(poolKey) || '';
+  const map = new Map();
+  for (const entry of parsePool(current)) map.set(entry.addr, entry.line);
+  let added = 0, updated = 0;
+  for (const raw of lines) {
+    const { main, comment } = splitComment(raw);
+    const addr = normalizeAddr(main);
+    if (!addr) continue;
+    const nextLine = comment ? `${addr} ${comment}` : addr;
+    if (!map.has(addr)) { added++; map.set(addr, nextLine); }
+    else if (map.get(addr) !== nextLine) { updated++; map.set(addr, nextLine); }
+  }
+  await store.put(poolKey, Array.from(map.values()).join('\n'));
+  return { poolKey, added, updated, total: map.size };
+}
+
+async function refreshSources(env, config, options = {}) {
+  const started = Date.now();
+  const rules = config.sourceRules || [];
+  if (!rules.length) return { enabled: false, message: '未配置 SOURCE_URLS / SOURCE_URLS_XX / SOURCE_RULES', rules: [], pools: [], processingTime: Date.now() - started };
+
+  const reports = [];
+  const grouped = new Map();
+  let totalCandidates = 0;
+  let totalChecked = 0;
+  let totalUsable = 0;
+
+  for (const rule of rules) {
+    const loaded = await loadSourceRuleCandidates(rule, config);
+    const entries = (loaded.entries || []).slice(0, config.sourceImportLimit);
+    const candidates = entries.map(e => e.addr);
+    const metaByAddr = new Map(entries.map(e => [normalizeAddr(e.addr), e]));
+    totalCandidates += (loaded.entries || loaded.candidates || []).length;
+    const checked = candidates.length ? await checkTargets(candidates, config) : [];
+    totalChecked += checked.length;
+    const usable = checked.filter(r => r.success === true);
+    totalUsable += usable.length;
+
+    const perCountry = new Map();
+    for (const row of usable) {
+      const addr = normalizeAddr(row.candidate);
+      const meta = metaByAddr.get(addr) || {};
+      const country = normalizeCountry(meta.country || rule.country || countryFromCheck(row, ''));
+      const poolKey = sourcePoolKey(rule, country);
+      const arr = grouped.get(poolKey) || [];
+      const currentCountryCount = perCountry.get(country || 'pool') || 0;
+      if (currentCountryCount >= config.sourceTargetPerCountry) continue;
+      arr.push(`${addr} ${sourceComment(row, rule, country)}`);
+      grouped.set(poolKey, arr);
+      perCountry.set(country || 'pool', currentCountryCount + 1);
+    }
+
+    reports.push({
+      id: rule.id,
+      country: rule.country || '',
+      pool: rule.pool || '',
+      urls: rule.urls.length,
+      loaded: loaded.candidates.length,
+      checked: checked.length,
+      usable: usable.length,
+      errors: loaded.errors,
+      countries: Object.fromEntries(perCountry.entries()),
+    });
+  }
+
+  const pools = [];
+  for (const [poolKey, lines] of grouped.entries()) {
+    pools.push(await mergeLinesIntoPool(env, poolKey, lines));
+  }
+
+  const result = { enabled: true, totalCandidates, totalChecked, totalUsable, reports, pools, processingTime: Date.now() - started, timestamp: nowISO() };
+  await saveJsonKV(env, SOURCE_REFRESH_KEY, result);
+  return result;
+}
+
+async function handleSourcesConfig(env, config) {
+  const last = await loadJsonKV(env, SOURCE_REFRESH_KEY, null);
+  return ok({
+    rules: (config.sourceRules || []).map(r => ({ id: r.id, country: r.country, pool: r.pool, urls: r.urls.length })),
+    settings: {
+      sourceMaxCandidates: config.sourceMaxCandidates,
+      sourceImportLimit: config.sourceImportLimit,
+      sourceTargetPerCountry: config.sourceTargetPerCountry,
+      sourceDefaultPort: config.sourceDefaultPort,
+      sourceAutoRefresh: config.sourceAutoRefresh,
+    },
+    last,
+  });
+}
+
+async function handleSourcesRefresh(env, config) {
+  return ok(await refreshSources(env, config, { manual: true }));
+}
+
 async function handleLoadRemote(request, config) {
   const body = await readJson(request);
   if (!body?.url) return fail('MISSING_URL', '缺少 URL');
@@ -1171,18 +1403,38 @@ async function handleLoadRemote(request, config) {
   const lines = extractRemoteTargets(text, { port, country, format: body.format || 'auto' });
   return ok({ ips: lines.join('\n'), count: lines.length });
 }
-function extractRemoteTargets(text, options) {
+function countryTagFromComment(comment) {
+  const text = String(comment || '').replace(/^#/, '').trim();
+  if (!text) return '';
+  const m = text.match(/(?:^|[\s,;|·/\[\](){}_-])([A-Za-z]{2})(?=$|[\s,;|·/\]\){}_:-])/);
+  return m ? normalizeCountry(m[1]) : '';
+}
+function extractRemoteEntries(text, options) {
   const format = String(options.format || 'auto').toLowerCase();
-  if (format === 'csv' || (format === 'auto' && text.includes(',') && /ip|address|端口|port|colo|country/i.test(text.split(/\r?\n/)[0] || ''))) return extractCsvTargets(text, options);
-  const regex = /(\[[0-9a-fA-F:]+\]|\b(?:\d{1,3}\.){3}\d{1,3}\b|\b[0-9a-fA-F:]{2,}\b)(?::(\d{1,5}))?/g;
+  if (format === 'csv' || (format === 'auto' && text.includes(',') && /ip|address|端口|port|colo|country/i.test(text.split(/\r?\n/)[0] || ''))) return extractCsvEntries(text, options);
   const out = [];
-  let m;
-  while ((m = regex.exec(text))) {
-    const host = stripBrackets(m[1]);
-    if (!isIPv4(host) && !isIPv6(host)) continue;
-    out.push(formatHostPort(host, m[2] || options.port || '443'));
+  const lineRegex = /(\[[0-9a-fA-F:]+\]|\b(?:\d{1,3}\.){3}\d{1,3}\b|\b[0-9a-fA-F:]{2,}\b)(?::(\d{1,5}))?/g;
+  for (const rawLine of String(text || '').split(/\r?\n/)) {
+    const { main, comment } = splitComment(rawLine);
+    const country = countryTagFromComment(comment) || normalizeCountry(options.country || '');
+    let m;
+    lineRegex.lastIndex = 0;
+    while ((m = lineRegex.exec(main))) {
+      const host = stripBrackets(m[1]);
+      if (!isIPv4(host) && !isIPv6(host)) continue;
+      out.push({ addr: formatHostPort(host, m[2] || options.port || '443'), country, comment });
+    }
   }
-  return unique(out);
+  const map = new Map();
+  for (const item of out) {
+    const addr = normalizeAddr(item.addr);
+    if (!addr || map.has(addr)) continue;
+    map.set(addr, { ...item, addr });
+  }
+  return Array.from(map.values());
+}
+function extractRemoteTargets(text, options) {
+  return extractRemoteEntries(text, options).map(item => item.addr);
 }
 function parseCsvLine(line) {
   const out = []; let cur = ''; let q = false;
@@ -1195,7 +1447,7 @@ function parseCsvLine(line) {
   }
   out.push(cur.trim()); return out;
 }
-function extractCsvTargets(text, options) {
+function extractCsvEntries(text, options) {
   const rows = text.split(/\r?\n/).filter(Boolean).map(parseCsvLine);
   if (!rows.length) return [];
   const header = rows[0].map(h => h.toLowerCase());
@@ -1205,12 +1457,16 @@ function extractCsvTargets(text, options) {
   const dataRows = ipIdx >= 0 ? rows.slice(1) : rows;
   const out = [];
   for (const row of dataRows) {
-    if (options.country && countryIdx >= 0 && String(row[countryIdx] || '').toUpperCase() !== options.country) continue;
+    const country = normalizeCountry((countryIdx >= 0 ? row[countryIdx] : '') || options.country || '');
+    if (options.country && countryIdx >= 0 && country !== normalizeCountry(options.country)) continue;
     const host = stripBrackets(row[ipIdx >= 0 ? ipIdx : 0] || '');
     if (!isIPv4(host) && !isIPv6(host)) continue;
-    out.push(formatHostPort(host, row[portIdx] || options.port || '443'));
+    out.push({ addr: formatHostPort(host, row[portIdx] || options.port || '443'), country });
   }
-  return unique(out);
+  return out;
+}
+function extractCsvTargets(text, options) {
+  return extractCsvEntries(text, options).map(item => item.addr);
 }
 async function handleAddRecord(request, config) {
   const body = await readJson(request);
@@ -1254,6 +1510,8 @@ const ROUTES = {
   '/api/clear-trash': (url, req, env) => handleClearTrash(env),
   '/api/restore-from-trash': (url, req, env) => handleRestoreTrash(req, env),
   '/api/load-remote-url': (url, req, env, config) => handleLoadRemote(req, config),
+  '/api/sources/config': (url, req, env, config) => handleSourcesConfig(env, config),
+  '/api/sources/refresh': (url, req, env, config) => handleSourcesRefresh(env, config),
   '/api/resolve': (url, req, env, config) => handleResolve(url, config),
   '/api/resolve-batch': (url, req, env, config) => handleResolveBatch(req, config),
   '/api/check-ip': (url, req, env, config) => handleCheckIP(url, config),
@@ -1267,7 +1525,7 @@ const ROUTES = {
   '/api/delete-record': (url, req, env, config) => handleDeleteRecord(url, config),
   '/api/maintain': (url, req, env, config) => handleMaintain(url, env, config),
 };
-const POST_ONLY = new Set(['/api/auth/login','/api/auth/logout','/api/save-pool','/api/create-pool','/api/delete-pool','/api/clear-trash','/api/restore-from-trash','/api/load-remote-url','/api/resolve-batch','/api/check','/api/save-domain-pool-mapping','/api/add-a-record','/api/delete-record','/api/maintain']);
+const POST_ONLY = new Set(['/api/auth/login','/api/auth/logout','/api/save-pool','/api/create-pool','/api/delete-pool','/api/clear-trash','/api/restore-from-trash','/api/load-remote-url','/api/sources/refresh','/api/resolve-batch','/api/check','/api/save-domain-pool-mapping','/api/add-a-record','/api/delete-record','/api/maintain']);
 async function handleApi(request, env, config) {
   const url = new URL(request.url);
   const handler = ROUTES[url.pathname];
@@ -1339,6 +1597,11 @@ export default {
   },
   async scheduled(event, env, ctx) {
     const config = createConfig(env);
-    ctx.waitUntil(maintainAllDomains(env, false, config).catch(e => console.error('scheduled maintain failed', e)));
+    ctx.waitUntil((async () => {
+      if (config.sourceAutoRefresh && config.sourceRules.length) {
+        await refreshSources(env, config, { manual: false }).catch(e => console.error('scheduled source refresh failed', e));
+      }
+      await maintainAllDomains(env, false, config);
+    })().catch(e => console.error('scheduled maintain failed', e)));
   }
 };
