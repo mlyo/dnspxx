@@ -540,7 +540,7 @@ async function loadFromRemoteUrl(url, allowedCountries = [], allowedPorts = []) 
                     ipStr = `[${pureIpv6Match[1]}]`;
                     portStr = allowedPorts.length > 0 ? allowedPorts[0] : '443';
                 } else {
-                    // 原有老逻辑（兜底）
+                    // 原有老逻辑（兜底处理复杂格式）
                     const parsed = parseIPLine(rawLine);
                     if (parsed) {
                         const meta = parsePoolLine(parsed);
@@ -558,7 +558,7 @@ async function loadFromRemoteUrl(url, allowedCountries = [], allowedPorts = []) 
             portStr = portStr.replace(/^"|"$/g, '').trim();
             countryStr = countryStr.replace(/^"|"$/g, '').trim();
 
-            // 🌟 4. 智能彩蛋：尝试从注释里提取国家代码 (比如从 #DE德国 提取出 DE)
+            // 4. 智能提取注释里的国家代码 (比如从 #DE德国 提取出 DE)
             if (!countryStr && comment) {
                 const countryMatch = comment.match(/#([a-zA-Z]{2})(?![a-zA-Z])/);
                 if (countryMatch) countryStr = countryMatch[1].toUpperCase();
@@ -578,36 +578,8 @@ async function loadFromRemoteUrl(url, allowedCountries = [], allowedPorts = []) 
                 if (!allowedCountries.includes(countryStr.toUpperCase())) continue;
             }
 
-            // 5. 重新把注释拼回去，合成项目的标准数据格式
+            // 5. 拼装成系统标准格式入库
             const finalLine = `${addr},null,${countryStr || 'null'} ${comment}`.trim();
-            const key = extractIPKey(finalLine);
-            map.set(key, finalLine);
-        }
-
-                }
-            }
-
-            if (!ipStr) continue;
-
-            ipStr = ipStr.replace(/^"|"$/g, '').trim();
-            portStr = portStr.replace(/^"|"$/g, '').trim();
-            countryStr = countryStr.replace(/^"|"$/g, '').trim();
-
-            let addr = ipStr;
-            if (portStr) {
-                addr = ipStr.includes(':') && !ipStr.startsWith('[') && !ipStr.includes(']') ? `[${ipStr}]:${portStr}` : `${ipStr}:${portStr}`;
-            } else {
-                const parts = parseAddrParts(ipStr);
-                portStr = parts.port || '443';
-                addr = parts.host.includes(':') && !parts.host.startsWith('[') ? `[${parts.host}]:${portStr}` : `${parts.host}:${portStr}`;
-            }
-
-            if (allowedPorts.length > 0 && !allowedPorts.includes(portStr)) continue;
-            if (allowedCountries.length > 0 && countryStr) {
-                if (!allowedCountries.includes(countryStr.toUpperCase())) continue;
-            }
-
-            const finalLine = `${addr},null,${countryStr || 'null'}`;
             const key = extractIPKey(finalLine);
             map.set(key, finalLine);
         }
@@ -617,6 +589,7 @@ async function loadFromRemoteUrl(url, allowedCountries = [], allowedPorts = []) 
     }
     return '';
 }
+
 
 
 async function handleCurrentStatus(url, config) {
