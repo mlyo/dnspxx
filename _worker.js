@@ -584,6 +584,8 @@ async function loadFromRemoteUrl(url, allowedCountries = [], allowedPorts = []) 
             map.set(key, finalLine);
         }
 
+                }
+            }
 
             if (!ipStr) continue;
 
