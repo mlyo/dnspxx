@@ -1279,94 +1279,136 @@ async function savePoolAndTrash(env, poolKey, poolList, poolModified, trashBatch
     if (poolModified) await env.IP_DATA.put(poolKey, poolList.join('\n'));
 }
 
-// --- 修复点 2：找回缺失的随机抽卡大换血逻辑 ---
-async function maintainARecords(env, target, addLog, report, poolKey, checkFn, config) {
+async function maintainARecords(env, target, addLog, report, poolKey, checkFn, config, budget) {
     const filters = [target.country ? `国家:${target.country}` : '', target.asn ? `ASN:${target.asn}` : ''].filter(Boolean).join(', ') || '无';
     addLog(`📋 强制轮换维护(A/AAAA): ${target.domain}:${target.port} (需凑齐: ${target.minActive}, 筛选: ${filters})`);
     const cfConfig = getTargetCFConfig(config, target);
 
+    // 1. 获取现有记录 (消耗 2 次子请求)
+    budget.fetchLeft -= 2; 
     const [aRecords, aaaaRecords] = await Promise.all([
         fetchCF(cfConfig, `/zones/${cfConfig.zoneId}/dns_records?name=${target.domain}&type=A`),
         fetchCF(cfConfig, `/zones/${cfConfig.zoneId}/dns_records?name=${target.domain}&type=AAAA`)
     ]);
 
     if (aRecords === null || aaaaRecords === null) {
-        addLog(`❌ 无法获取A/AAAA记录 - 请检查CF配置`);
+        addLog(`❌ 无法获取A/AAAA记录 - CF配置错误 (或已被流控拦截)`);
         report.configError = true;
         return;
     }
 
     const currentRecords = [...aRecords, ...aaaaRecords];
-    addLog(`⚠️ 发现旧记录 ${currentRecords.length} 条，等待新节点就绪后下线`);
+    addLog(`⚠️ 发现旧记录 ${currentRecords.length} 条，准备执行 Batch 批量替换`);
 
     let poolList = parsePoolList(await env.IP_DATA.get(poolKey));
     let poolModified = false;
     const trashBatch = [];
-    const validHosts = [];
+    
+    const readyNodes = []; 
     report.poolKeyUsed = poolKey;
 
     let candidates = await getCandidateIPs(env, target, addLog, poolKey);
-    // 随机打乱洗牌抽卡
     candidates = candidates.sort(() => Math.random() - 0.5);
 
+    // 2. 盲测并挑选新节点
     for (const item of candidates) {
-        if (validHosts.length >= target.minActive) break;
+        if (readyNodes.length >= target.minActive) break;
+        if (budget.fetchLeft <= 2) { 
+            addLog(`⚠️ 子请求配额即将耗尽，提前终止测新，保留配额给最终 API 提交`);
+            break;
+        }
+
         const ipPort = extractIPKey(item);
         const parsed = parseAddr(ipPort, target.port);
-        if (!ipPort || parsed.port !== target.port || validHosts.includes(parsed.host)) continue;
+        if (!ipPort || parsed.port !== target.port || readyNodes.some(n => n.host === parsed.host)) continue;
 
+        budget.fetchLeft -= (config.checkApiBackup ? 2 : 1); 
         const result = normalizeCheckResult(await checkFn(ipPort), ipPort);
         const matches = result.success && exitFilterMatchesResult(result, target.exitFilter) && targetMetaMatchesResult(result, target);
         
         if (matches) {
-            const added = await addAddressRecord(cfConfig, target.domain, parsed.host);
-            if (added.ok) {
-                validHosts.push(parsed.host);
-                report.added.push({ ip: ipPort, colo: result.colo || 'N/A', time: result.responseTime || '-', country: result.country || 'null', asn: result.asn || 'null' });
-                addLog(`  ✅ 抽中并上线: ${ipPort} - ${result.colo} (${result.responseTime}ms)`);
-            }
+            readyNodes.push({ host: parsed.host, ipPort, result });
+            addLog(`  ✅ 测活通过待上线: ${ipPort} - ${result.colo}`);
         } else {
             if (!result.success) {
                 const removed = removePoolEntry(poolList, ipPort);
                 poolList = removed.list;
                 if (removed.removed) { report.poolRemoved++; poolModified = true; }
                 trashBatch.push({ ipAddr: ipPort, reason: '轮换盲测失效', poolKey });
-                addLog(`  ❌ 抽中但失效: ${ipPort}，已移入垃圾桶`);
+                addLog(`  ❌ 抽中但失效，移入垃圾桶: ${ipPort}`);
             }
         }
     }
 
-    report.afterActive = validHosts.length;
-    if (validHosts.length < target.minActive) {
+    report.afterActive = readyNodes.length;
+    if (readyNodes.length < target.minActive) {
         report.poolExhausted = true;
-        addLog(`⚠️ ${poolKey} 库存不足或节点大面积阵亡，仅抽中 ${validHosts.length}/${target.minActive} 个`);
+        addLog(`⚠️ 库存不足或配额受限，仅备妥 ${readyNodes.length}/${target.minActive} 个`);
     }
 
-    // 只有在至少抽中1个有效节点后，才全量清除旧记录，防止域名断网
-    if (validHosts.length > 0) {
-        for (const r of currentRecords) {
-            if (!validHosts.includes(r.content)) {
-                await deleteDNSRecord(cfConfig, r.id);
-                report.removed.push({ ip: formatAddr(r.content, target.port), reason: '大换血轮换下线', colo: 'N/A', time: '-' });
-                addLog(`  ♻️ 轮换剔除旧节点: ${r.content}`);
+    // 3. 终极优化：使用 Batch DNS Records 批量提交
+    if (readyNodes.length > 0) {
+        const batchPayload = { deletes: [], puts: [], posts: [] };
+        let i = 0;
+        
+        for (; i < readyNodes.length; i++) {
+            const node = readyNodes[i];
+            const recordType = node.host.includes(':') ? 'AAAA' : 'A';
+            const recordData = {
+                name: target.domain,
+                type: recordType,
+                content: node.host,
+                ttl: 60,
+                proxied: false
+            };
+
+            if (i < currentRecords.length) {
+                // 覆盖旧记录
+                batchPayload.puts.push({ id: currentRecords[i].id, ...recordData });
+            } else {
+                // 新增记录
+                batchPayload.posts.push(recordData);
             }
+            report.added.push({ ip: node.ipPort, colo: node.result.colo || 'N/A', time: node.result.responseTime || '-', country: node.result.country || 'null', asn: node.result.asn || 'null' });
+        }
+        
+        // 清理多余的旧记录
+        for (; i < currentRecords.length; i++) {
+            batchPayload.deletes.push({ id: currentRecords[i].id });
+            report.removed.push({ ip: formatAddr(currentRecords[i].content, target.port), reason: '清理冗余', colo: 'N/A', time: '-' });
+        }
+
+        // 发起单次 Batch 请求，消耗锁定为 1
+        budget.fetchLeft -= 1;
+        addLog(`🚀 发起 Batch 批量更新 (覆盖:${batchPayload.puts.length}, 新增:${batchPayload.posts.length}, 删除:${batchPayload.deletes.length})`);
+        
+        const batchResult = await fetchCF(cfConfig, `/zones/${cfConfig.zoneId}/dns_records/batch`, 'POST', batchPayload);
+        
+        if (batchResult !== null) {
+            addLog(`✅ 批量更新成功！(仅消耗 1 次子请求)`);
+        } else {
+            addLog(`❌ 批量更新失败，请检查 API Token 是否具有 DNS:Edit 权限。`);
         }
     } else {
-        addLog(`❌ 严重警告：未能抽中任何存活节点！为防止域名断网，保留原有解析记录不作删除。`);
+        addLog(`❌ 未能抽中可用节点！保留原有解析。`);
     }
 
+    // 4. 保存状态
     await savePoolAndTrash(env, poolKey, poolList, poolModified, trashBatch);
     report.poolAfterCount = poolList.length;
 }
 
-async function maintainTXTRecords(env, target, addLog, report, poolKey, checkFn, config) {
+
+
+async function maintainTXTRecords(env, target, addLog, report, poolKey, checkFn, config, budget) {
     const filters = [target.country ? `国家:${target.country}` : '', target.asn ? `ASN:${target.asn}` : ''].filter(Boolean).join(', ') || '无';
     addLog(`📝 强制轮换维护(TXT): ${target.domain} (需凑齐: ${target.minActive}, 筛选: ${filters})`);
     const cfConfig = getTargetCFConfig(config, target);
 
+    budget.fetchLeft -= 1; // 扣除请求额度
     const records = await fetchCF(cfConfig, `/zones/${cfConfig.zoneId}/dns_records?name=${target.domain}&type=TXT`);
     if (records === null) {
-        addLog(`❌ 无法获取TXT记录 - 请检查CF配置`);
+        addLog(`❌ 无法获取TXT记录 - CF配置错误 (或已被流控拦截)`);
         report.configError = true;
         return;
     }
@@ -1382,14 +1424,21 @@ async function maintainTXTRecords(env, target, addLog, report, poolKey, checkFn,
     report.poolKeyUsed = poolKey;
 
     let candidates = await getCandidateIPs(env, target, addLog, poolKey);
-    // 随机打乱洗牌抽卡
     candidates = candidates.sort(() => Math.random() - 0.5);
 
     for (const item of candidates) {
         if (validIPs.length >= target.minActive) break;
+
+        // 🛡️ 踩刹车
+        if (budget.fetchLeft <= 0) {
+            addLog(`⚠️ 测活请求已达云端安全上限，强制停止测新`);
+            break;
+        }
+
         const ipPort = extractIPKey(item);
         if (!ipPort || validIPs.includes(ipPort)) continue;
 
+        budget.fetchLeft -= (config.checkApiBackup ? 2 : 1);
         const result = normalizeCheckResult(await checkFn(ipPort), ipPort);
         const matches = result.success && exitFilterMatchesResult(result, target.exitFilter) && targetMetaMatchesResult(result, target);
         
@@ -1411,10 +1460,11 @@ async function maintainTXTRecords(env, target, addLog, report, poolKey, checkFn,
     report.afterActive = validIPs.length;
     if (validIPs.length < target.minActive) {
         report.poolExhausted = true;
-        addLog(`⚠️ ${poolKey} 库存不足或节点大面积阵亡，仅抽中 ${validIPs.length}/${target.minActive} 个`);
+        addLog(`⚠️ ${poolKey} 库存不足或测速达上限，仅抽中 ${validIPs.length}/${target.minActive} 个`);
     }
 
     if (validIPs.length > 0) {
+        budget.fetchLeft -= 1; 
         const ok = await upsertTXTRecord(cfConfig, target.domain, record?.id, validIPs);
         addLog(ok ? `📝 TXT已强制轮换更新` : `⚠️ TXT保存失败`);
         report.txtUpdated = true;
@@ -1424,7 +1474,7 @@ async function maintainTXTRecords(env, target, addLog, report, poolKey, checkFn,
             }
         }
     } else {
-        addLog(`❌ 严重警告：未能抽中任何存活节点！为防止域名断网，保留原有TXT记录不作删除。`);
+        addLog(`❌ 未能抽中存活节点！保留原有TXT记录不删除。`);
     }
 
     await savePoolAndTrash(env, poolKey, poolList, poolModified, trashBatch);
@@ -1432,16 +1482,15 @@ async function maintainTXTRecords(env, target, addLog, report, poolKey, checkFn,
 }
 
 
+
 async function maintainAllDomains(env, isManual = false, config) {
     const allReports = [];
     const startTime = Date.now();
 
     const poolStats = new Map();
-    // 内联 loadDomainPoolMapping
     const mappingJson = await env.IP_DATA.get('domain_pool_mapping') || '{}';
     const domainPoolMapping = safeJSONParse(mappingJson, {});
 
-    // 单次维护任务内缓存 proxyip 检测结果，减少重复外部请求（不改变结果，仅减少请求次数）
     const checkCache = new Map();
     const checkProxyIPCached = async (addr) => {
         const key = (addr || '').trim();
@@ -1456,6 +1505,9 @@ async function maintainAllDomains(env, isManual = false, config) {
         checkCache.set(key, res);
         return res;
     };
+
+    // 🛡️ 新增：全局子请求配额防护机制 (最大50次，留12次余量给TG和兜底)
+    const budget = { fetchLeft: 38 };
 
     const poolKeys = await listPoolKeys(env);
     const poolSettled = await Promise.allSettled(
@@ -1475,23 +1527,17 @@ async function maintainAllDomains(env, isManual = false, config) {
             console.log(formatLogMessage(`⏸️ 跳过维护: ${target.domain} 已关闭`));
             continue;
         }
-        const { domain, mode, port, minActive } = target;
 
+        // 🛡️ 检测配额是否耗尽
+        if (budget.fetchLeft <= 0) {
+            console.log(formatLogMessage(`🛑 触发 Cloudflare 50次请求防线，强制跳过剩余域名的维护`));
+            break;
+        }
+
+        const { domain, mode, port, minActive } = target;
         const report = {
-            target,
-            domain,
-            mode,
-            port,
-            minActive,
-            beforeActive: 0,
-            afterActive: 0,
-            added: [],
-            removed: [],
-            poolRemoved: 0,
-            poolExhausted: false,
-            configError: false,
-            checkDetails: [],
-            logs: []
+            target, domain, mode, port, minActive, beforeActive: 0, afterActive: 0,
+            added: [], removed: [], poolRemoved: 0, poolExhausted: false, configError: false, checkDetails: [], logs: []
         };
         
         const addLog = (m) => {
@@ -1501,52 +1547,35 @@ async function maintainAllDomains(env, isManual = false, config) {
         };
         
         addLog(`🚀 开始维护: ${target.domain}`);
-        // 内联 getPoolKeyForDomain
         const poolKey = domainPoolMapping?.[target.domain] ?? 'pool';
 
+        // 将配额对象传给底层
         if (target.mode === 'A') {
-            await maintainARecords(env, target, addLog, report, poolKey, checkProxyIPCached, config);
+            await maintainARecords(env, target, addLog, report, poolKey, checkProxyIPCached, config, budget);
         } else if (target.mode === 'TXT') {
-            await maintainTXTRecords(env, target, addLog, report, poolKey, checkProxyIPCached, config);
+            await maintainTXTRecords(env, target, addLog, report, poolKey, checkProxyIPCached, config, budget);
         }
         
         addLog(`✅ 完成: ${report.afterActive}/${target.minActive}`);
         allReports.push(report);
     }
 
-    // 更新池统计（无需再次遍历 KV 读取：直接使用维护过程中已知的最终池长度）
     for (const r of allReports) {
         if (r && r.poolKeyUsed && typeof r.poolAfterCount === 'number' && poolStats.has(r.poolKeyUsed)) {
             poolStats.get(r.poolKeyUsed).after = r.poolAfterCount;
         }
     }
 
-    // 重新读取垃圾桶的实际数量（维护过程中 batchAddToTrash 直接写入 KV，不经过 report）
     if (poolStats.has('pool_trash')) {
         const trashRaw = await env.IP_DATA.get('pool_trash') || '';
         poolStats.get('pool_trash').after = parsePoolList(trashRaw).length;
     }
      
-    // 1. 检查是否有IP变化（删除或新增）
-    const hasIPChanges = allReports.some(r => 
-        r.added.length > 0 || 
-        r.removed.length > 0 || 
-        (r.txtAdded && r.txtAdded.length > 0) || 
-        (r.txtRemoved && r.txtRemoved.length > 0)
-    );
-    
-    // 2. 检查是否有配置错误
+    const hasIPChanges = allReports.some(r => r.added.length > 0 || r.removed.length > 0 || (r.txtAdded && r.txtAdded.length > 0) || (r.txtRemoved && r.txtRemoved.length > 0));
     const hasConfigError = allReports.some(r => r.configError);
-
-    // 3. 检查是否有域名活跃数不足且无法补充IP
-    // 注：poolExhausted 表示候选IP不足（包括池枯竭、端口不匹配等情况）
-    const hasInsufficientActive = allReports.some(r => 
-        r.afterActive < r.minActive && r.poolExhausted
-    );
+    const hasInsufficientActive = allReports.some(r => r.afterActive < r.minActive && r.poolExhausted);
     
-    // 通知条件：手动执行 OR IP变化 OR 活跃数不足 OR 配置错误
-    // 注：移除了 hasPoolExhausted，因为 hasInsufficientActive 已涵盖"无法补充IP"的场景
-    const shouldNotify = isManual || hasIPChanges || hasInsufficientActive || hasConfigError;
+    const shouldNotify = isManual || hasIPChanges || hasInsufficientActive || hasConfigError || budget.fetchLeft <= 0;
 
     let tgResult = { sent: false, reason: 'no_need' };
     if (shouldNotify && config.tgEnabled !== false) {
@@ -1555,17 +1584,14 @@ async function maintainAllDomains(env, isManual = false, config) {
         tgResult = { sent: false, reason: 'disabled', message: 'TG通知已关闭' };
     }
 
-    console.log(`✅ 维护任务完成，总耗时: ${Date.now() - startTime}ms，处理域名: ${config.targets.length}个`);
+    console.log(`✅ 维护任务完成，总耗时: ${Date.now() - startTime}ms，处理域名: ${allReports.length}个`);
     
     return {
-        success: true,
-        reports: allReports,
-        poolStats: Object.fromEntries(poolStats),
-        notified: tgResult.sent,
-        tgStatus: tgResult,
-        processingTime: Date.now() - startTime
+        success: true, reports: allReports, poolStats: Object.fromEntries(poolStats),
+        notified: tgResult.sent, tgStatus: tgResult, processingTime: Date.now() - startTime
     };
 }
+
 
 function formatReportMeta(item = {}) {
     const parts = [];
