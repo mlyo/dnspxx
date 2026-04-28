@@ -486,8 +486,15 @@ async function loadFromRemoteUrl(url, allowedCountries = [], allowedPorts = []) 
     } catch { return ''; }
 
     try {
-        const r = await fetch(url, { signal: AbortSignal.timeout(GLOBAL_SETTINGS.REMOTE_LOAD_TIMEOUT) });
+                // 伪装成正常的 Chrome 浏览器，防止被 Github 或其他防火墙拦截
+        const r = await fetch(url, { 
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            },
+            signal: AbortSignal.timeout(GLOBAL_SETTINGS.REMOTE_LOAD_TIMEOUT) 
+        });
         if (!r.ok) return '';
+
         const text = await r.text();
         const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
         if (!lines.length) return '';
