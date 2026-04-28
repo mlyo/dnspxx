@@ -10,7 +10,7 @@ const DEFAULT_CONFIG = {
     zones: [],               // app_config.zones: 多套基础域名 + CF 凭据
     
     // 目标维护域名的配置
-    targets: [],             // CF_DOMAIN: 域名配置（解析后的目标列表）
+    targets: [],             // app_config.targets: 配置中心保存的维护目标
     
     // Telegram 通知配置
     tgToken: '',             // TG_TOKEN: Telegram Bot Token
@@ -45,11 +45,10 @@ const GLOBAL_SETTINGS = {
     DEFAULT_MIN_ACTIVE: 3,       // 默认最小活跃 IP 数
     MAX_TRASH_SIZE: 1000,        // 垃圾桶最大条目数
     MAX_POOL_NAME_LENGTH: 50,    // IP池名称最大长度
-    MAX_IPS_PER_DOMAIN: 50,      // 域名解析最多取多少个 IP
 };
 
 const APP_CONFIG_KEY = 'app_config';
-const APP_VERSION = '2026.04.26-21.25';
+const APP_VERSION = '2026.04.27-13.41';
 
 function safeJSONParse(str, defaultValue = null) {
     try { return str ? JSON.parse(str) : defaultValue; }
@@ -66,26 +65,42 @@ const extractIPKey = line => {
     return main.split(',')[0].trim();
 };
 
-function extractHostFromAddr(addr) {
+function parseAddr(addr, defaultPort = '443') {
     const value = extractIPKey(addr || '');
-    if (!value) return '';
+    if (!value) return { host: '', port: defaultPort, address: '' };
+    // host is DNS content (bare IPv6); address is check/pool format with port.
     if (value.startsWith('[')) {
         const end = value.indexOf(']');
-        return end >= 0 ? value.slice(1, end) : value.replace(/^\[/, '');
+        const host = end >= 0 ? value.slice(1, end) : value.replace(/^\[/, '');
+        const portMatch = value.match(/\]:(\d+)$/);
+        const port = portMatch ? portMatch[1] : defaultPort;
+        return { host, port, address: formatAddr(host, port) };
     }
     const parts = value.split(':');
-    return parts.length > 2 ? value : parts[0];
+    if (parts.length === 2) {
+        const port = parts[1] || defaultPort;
+        return { host: parts[0], port, address: `${parts[0]}:${port}` };
+    }
+    if (parts.length > 2) {
+        return { host: value, port: defaultPort, address: formatAddr(value, defaultPort) };
+    }
+    return { host: value, port: defaultPort, address: `${value}:${defaultPort}` };
+}
+
+function extractHostFromAddr(addr) {
+    return parseAddr(addr).host;
 }
 
 function extractPortFromAddr(addr, defaultPort = '443') {
+    return parseAddr(addr, defaultPort).port;
+}
+
+function hasExplicitPort(addr) {
     const value = extractIPKey(addr || '');
-    if (!value) return defaultPort;
-    if (value.startsWith('[')) {
-        const match = value.match(/\]:(\d+)$/);
-        return match ? match[1] : defaultPort;
-    }
+    if (!value) return false;
+    if (value.startsWith('[')) return /\]:(\d+)$/.test(value);
     const parts = value.split(':');
-    return parts.length === 2 ? parts[1] : defaultPort;
+    return parts.length === 2 && parts[1] !== '';
 }
 
 function isIPv6Address(ip) {
@@ -116,13 +131,11 @@ function parsePoolEntry(line) {
     const fields = beforeComment.split(',').map(item => item.trim());
     const address = fields[0] || '';
     if (!address) return null;
-    const legacyComment = raw.includes('#') ? raw.slice(raw.indexOf('#') + 1).trim() : '';
     return {
         address,
         asn: fields[1] || null,
         country: fields[2] || null,
-        stack: normalizeStackFilter(fields[3] || null),
-        legacyComment
+        stack: normalizeStackFilter(fields[3] || null)
     };
 }
 
@@ -137,11 +150,33 @@ function normalizeStackFilter(value) {
 
 const POOL_DISPLAY_NAMES = { pool: '通用池', pool_trash: '🗑️ 垃圾桶', domain_pool_mapping: '系统数据' };
 const getPoolDisplayName = poolKey => POOL_DISPLAY_NAMES[poolKey] || poolKey.replace('pool_', '') + '池';
+const DELETABLE_PROTECTED_POOL_KEYS = new Set(['pool', 'pool_trash', 'domain_pool_mapping', 'pool_display_names']);
+const SYSTEM_POOL_KEYS = new Set(['pool_trash', 'domain_pool_mapping', 'pool_display_names']);
+const isPoolDataKey = key => key === 'pool' || key === 'pool_trash' || /^pool_[\u4e00-\u9fa5a-zA-Z0-9_-]+$/.test(key || '');
+const isUserPoolKey = key => key === 'pool' || /^pool_[\u4e00-\u9fa5a-zA-Z0-9_-]+$/.test(key || '');
+const isWritablePoolKey = key => isUserPoolKey(key) || key === 'pool_trash';
+
+async function readPoolDisplayNames(env) {
+    return safeJSONParse(await env.IP_DATA.get('pool_display_names'), {});
+}
+
+async function writePoolDisplayNames(env, names) {
+    await env.IP_DATA.put('pool_display_names', JSON.stringify(names || {}));
+}
+
+async function listPoolKeys(env) {
+    const allKeys = await env.IP_DATA.list();
+    const pools = allKeys.keys.map(k => k.name).filter(isPoolDataKey);
+    if (!pools.includes('pool')) pools.unshift('pool');
+    return pools;
+}
 
 const formatLogMessage = msg => `[${new Date().toLocaleTimeString('zh-CN', { timeZone: 'Asia/Shanghai' })}] ${msg}`;
 
 const JSON_CONTENT_TYPE = 'application/json; charset=UTF-8';
 const CF_ERROR_MSG = 'CF配置错误或API调用失败';
+
+// ==================== Response helpers / Auth ====================
 
 function jsonResponse(data, status = 200, extraHeaders = undefined) {
     const headers = new Headers({ 'Content-Type': JSON_CONTENT_TYPE });
@@ -156,6 +191,7 @@ const badRequest = data => jsonResponse(data, 400);
 const serverError = data => jsonResponse(data, 500);
 const readJsonBody = async req => { try { return await req.json(); } catch { return null; } };
 const hasKVBinding = env => Boolean(env?.IP_DATA && typeof env.IP_DATA.get === 'function' && typeof env.IP_DATA.put === 'function');
+const escapeHTML = str => String(str || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 
 function parseCookieHeader(cookieHeader) {
     const out = {};
@@ -203,26 +239,36 @@ function unauthorizedResponse(url) {
             message: '需要提供 AUTH_KEY'
         }, 401);
     }
-    // 页面：给出最小可理解指引
+    const nextPath = `${url.pathname || '/'}${url.search ? url.search.replace(/[?&]key=[^&]*/g, '') : ''}`;
     const html = `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>DDNS Pro - 未授权</title>
+  <title>DDNS Pro - 登录</title>
   <style>
-    body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:#0b0b0f;color:#eaeaf2;margin:0;padding:40px}
-    .card{max-width:760px;margin:0 auto;background:#151523;border:1px solid #2a2a40;border-radius:16px;padding:24px}
-    code{background:#0f0f1a;padding:2px 6px;border-radius:8px}
-    a{color:#7aa2ff}
+    *{box-sizing:border-box}
+    body{min-height:100vh;margin:0;display:grid;place-items:center;padding:24px;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:#f5f5f7;color:#1d1d1f}
+    .login{width:100%;max-width:380px;background:#fff;border:1px solid #e5e7eb;border-radius:18px;padding:28px;box-shadow:0 18px 50px rgba(15,23,42,.08)}
+    h1{font-size:22px;line-height:1.2;margin:0 0 8px;font-weight:750}
+    p{margin:0 0 22px;color:#6b7280;font-size:13px;line-height:1.55}
+    label{display:block;margin-bottom:8px;font-size:13px;font-weight:700;color:#374151}
+    input{width:100%;height:44px;border:1px solid #d8dce3;border-radius:12px;padding:0 13px;font:inherit;outline:none;background:#f9fafb}
+    input:focus{background:#fff;border-color:#007aff;box-shadow:0 0 0 4px rgba(0,122,255,.12)}
+    button{width:100%;height:44px;margin-top:14px;border:0;border-radius:12px;background:#007aff;color:#fff;font-weight:750;font:inherit;cursor:pointer}
+    button:hover{background:#0068d9}
+    .hint{margin-top:14px;text-align:center;color:#9ca3af;font-size:12px}
   </style>
 </head>
 <body>
-  <div class="card">
-    <h2>未授权</h2>
-    <p>该面板已开启访问保护（配置了 <code>AUTH_KEY</code>）。</p>
-    <p>打开方式示例：<code>/?key=你的AUTH_KEY</code>（首次访问会写入 Cookie，后续可直接打开）。</p>
-  </div>
+  <form class="login" method="GET" action="${escapeHTML(nextPath || '/')}">
+    <h1>DDNS Pro</h1>
+    <p>该面板已开启访问保护，输入访问密钥后会保持登录状态。</p>
+    <label for="key">访问密钥</label>
+    <input id="key" name="key" type="password" autocomplete="current-password" autofocus required />
+    <button type="submit">进入面板</button>
+    <div class="hint">未配置 AUTH_KEY 时会直接进入面板</div>
+  </form>
 </body>
 </html>`;
     return new Response(html, { status: 401, headers: { 'Content-Type': 'text/html;charset=UTF-8' } });
@@ -325,7 +371,7 @@ export default {
 
 const API_ROUTES = {
     '/api/get-pool': (url, req, env, config) => handleGetPool(url, env),
-    '/api/save-pool': (url, req, env, config) => handleSavePool(req, env, config),
+    '/api/save-pool': (url, req, env, config) => handleSavePool(req, env),
     '/api/load-remote-url': (url, req, env, config) => handleLoadRemoteUrl(req),
     '/api/current-status': (url, req, env, config) => handleCurrentStatus(url, config),
     '/api/lookup-domain': (url, req, env, config) => handleLookupDomain(url, config),
@@ -336,6 +382,7 @@ const API_ROUTES = {
     '/api/get-domain-pool-mapping': (url, req, env, config) => handleGetDomainPoolMapping(env),
     '/api/save-domain-pool-mapping': (url, req, env, config) => handleSaveDomainPoolMapping(req, env),
     '/api/create-pool': (url, req, env, config) => handleCreatePool(req, env),
+    '/api/rename-pool': (url, req, env, config) => handleRenamePool(req, env),
     '/api/delete-pool': (url, req, env, config) => handleDeletePool(url, env),
     '/api/clear-trash': (url, req, env, config) => handleClearTrash(env),
     '/api/restore-from-trash': (url, req, env, config) => handleRestoreFromTrash(req, env),
@@ -343,11 +390,14 @@ const API_ROUTES = {
     '/api/save-config': (url, req, env, config) => handleSaveConfig(req, env)
 };
 
+// ==================== API handlers ====================
+
 const POST_ONLY_ROUTES = new Set([
     '/api/save-pool', '/api/load-remote-url', '/api/add-a-record',
     '/api/save-domain-pool-mapping', '/api/create-pool', '/api/clear-trash',
     '/api/restore-from-trash',
     '/api/delete-record',
+    '/api/rename-pool',
     '/api/delete-pool', 
     '/api/maintain',
     '/api/save-config'
@@ -364,6 +414,9 @@ async function handleAPIRequest(url, request, env, config) {
 async function handleGetPool(url, env) {
     const poolKey = url.searchParams.get('poolKey') || 'pool';
     const onlyCount = url.searchParams.get('onlyCount') === 'true';
+    if (!isWritablePoolKey(poolKey)) {
+        return badRequest({ success: false, error: '无效的池名称' });
+    }
     
     const pool = await env.IP_DATA.get(poolKey) || '';
     const count = pool.trim() ? pool.trim().split('\n').length : 0;
@@ -374,14 +427,17 @@ async function handleGetPool(url, env) {
     return jsonResponse({ pool, count });
 }
 
-async function handleSavePool(request, env, config) {
+async function handleSavePool(request, env) {
     const body = await readJsonBody(request);
     if (!body) {
         return badRequest({ success: false, error: '请求体不是有效JSON' });
     }
     const poolKey = body.poolKey || 'pool';
     const mode = body.mode || 'append'; // append: 追加, replace: 覆盖, remove: 删除
-    const newIPs = await cleanIPListAsync(body.pool || '', false, config);
+    if (!isWritablePoolKey(poolKey)) {
+        return badRequest({ success: false, error: '无效的池名称' });
+    }
+    const newIPs = cleanIPList(body.pool || '');
 
     if (!newIPs && mode !== 'remove') {
         return badRequest({ success: false, error: '没有有效IP' });
@@ -531,46 +587,21 @@ async function handleDeleteRecord(url, config) {
     const cfConfig = getTargetCFConfig(config, config.targets[targetIndex] || null);
 
     if (isTxt && ip) {
-        // TXT记录删除单个IP
         const record = await fetchCF(cfConfig, `/zones/${cfConfig.zoneId}/dns_records/${id}`);
-        if (!record) {
-            return badRequest({ success: false, error: '获取记录失败' });
-        }
+        if (!record) return badRequest({ success: false, error: '获取记录失败' });
 
-        let ips = parseTXTContent(record.content);
-
-        // 移除指定IP
-        ips = ips.filter(i => i !== ip);
-
-        if (ips.length === 0) {
-            // 如果没有IP了，删除整个TXT记录
-            const result = await fetchCF(cfConfig, `/zones/${cfConfig.zoneId}/dns_records/${id}`, 'DELETE');
-            if (result === null) {
-                return jsonResponse({ success: false, error: 'CF API 删除失败' });
-            }
-        } else {
-            // 更新TXT记录
-            const newContent = `"${ips.join(',')}"`;
-            const result = await fetchCF(cfConfig, `/zones/${cfConfig.zoneId}/dns_records/${id}`, 'PUT', {
-                type: 'TXT',
-                name: record.name,
-                content: newContent,
-                ttl: 60
-            });
-            if (result === null) {
-                return jsonResponse({ success: false, error: 'CF API 更新失败' });
-            }
-        }
-
-        return jsonResponse({ success: true });
+        const remaining = parseTXTContent(record.content).filter(item => item !== ip);
+        const ok = remaining.length === 0
+            ? await deleteDNSRecord(cfConfig, id)
+            : await upsertTXTRecord(cfConfig, record.name, id, remaining);
+        return ok
+            ? jsonResponse({ success: true })
+            : jsonResponse({ success: false, error: 'CF API 更新失败' });
     }
     
-    // 地址记录删除
-    const result = await fetchCF(cfConfig, `/zones/${cfConfig.zoneId}/dns_records/${id}`, 'DELETE');
-    if (result === null) {
-        return jsonResponse({ success: false, error: 'CF API 删除失败' });
-    }
-    return jsonResponse({ success: true });
+    return await deleteDNSRecord(cfConfig, id)
+        ? jsonResponse({ success: true })
+        : jsonResponse({ success: false, error: 'CF API 删除失败' });
 }
 
 async function handleAddARecord(request, config) {
@@ -587,8 +618,7 @@ async function handleAddARecord(request, config) {
         return badRequest({ success: false, error: '参数错误' });
     }
 
-    // 格式化IP:PORT
-    const addr = ip.includes(':') ? ip : `${ip}:${target.port}`;
+    const addr = parseAddr(ip, target.port).address;
 
     const check = await checkProxyIP(addr, config);
     if (!check.success) {
@@ -598,48 +628,19 @@ async function handleAddARecord(request, config) {
     // TXT模式：追加到TXT记录
     if (target.mode === 'TXT') {
         const records = await fetchCF(cfConfig, `/zones/${cfConfig.zoneId}/dns_records?name=${target.domain}&type=TXT`);
-
         if (records === null) {
             return jsonResponse({ success: false, error: CF_ERROR_MSG });
         }
 
-        let currentIPs = [];
-        let recordId = null;
-
-        if (records?.length > 0) {
-            recordId = records[0].id;
-            currentIPs = parseTXTContent(records[0].content);
-        }
-
-        // 检查是否已存在
+        const record = records?.[0] || null;
+        const currentIPs = record ? parseTXTContent(record.content) : [];
         if (currentIPs.includes(addr)) {
             return jsonResponse({ success: false, error: 'IP已存在于TXT记录' });
         }
 
-        // 追加新IP
         currentIPs.push(addr);
-        const newContent = `"${currentIPs.join(',')}"`;
-
-        if (recordId) {
-            const putResult = await fetchCF(cfConfig, `/zones/${cfConfig.zoneId}/dns_records/${recordId}`, 'PUT', {
-                type: 'TXT',
-                name: target.domain,
-                content: newContent,
-                ttl: 60
-            });
-            if (putResult === null) {
-                return jsonResponse({ success: false, error: 'CF API 更新TXT记录失败' });
-            }
-        } else {
-            const postResult = await fetchCF(cfConfig, `/zones/${cfConfig.zoneId}/dns_records`, 'POST', {
-                type: 'TXT',
-                name: target.domain,
-                content: newContent,
-                ttl: 60
-            });
-            if (postResult === null) {
-                return jsonResponse({ success: false, error: 'CF API 创建TXT记录失败' });
-            }
+        if (!await upsertTXTRecord(cfConfig, target.domain, record?.id, currentIPs)) {
+            return jsonResponse({ success: false, error: 'CF API 保存TXT记录失败' });
         }
 
         return jsonResponse({
@@ -651,21 +652,13 @@ async function handleAddARecord(request, config) {
     }
 
     // 地址记录模式
-    const content = extractHostFromAddr(ip);
-    const recordType = getDNSRecordTypeForIP(content);
-    const result = await fetchCF(cfConfig, `/zones/${cfConfig.zoneId}/dns_records`, 'POST', {
-        type: recordType,
-        name: target.domain,
-        content,
-        ttl: 60,
-        proxied: false
-    });
+    const added = await addAddressRecord(cfConfig, target.domain, extractHostFromAddr(addr));
 
     return jsonResponse({
-        success: !!result,
+        success: added.ok,
         colo: check.colo,
         time: check.responseTime,
-        mode: recordType
+        mode: added.type
     });
 }
 
@@ -687,17 +680,9 @@ async function handleMaintain(url, env, config) {
 async function handleGetDomainPoolMapping(env) {
     const mappingJson = await env.IP_DATA.get('domain_pool_mapping') || '{}';
     const mapping = safeJSONParse(mappingJson, {});
-    
-    const allKeys = await env.IP_DATA.list();
-    const pools = allKeys.keys
-        .filter(k => k.name.startsWith('pool'))
-        .map(k => k.name);
-    
-    if (!pools.includes('pool')) {
-        pools.unshift('pool');
-    }
-    
-    return jsonResponse({ mapping, pools });
+    const poolNames = await readPoolDisplayNames(env);
+    const pools = await listPoolKeys(env);
+    return jsonResponse({ mapping, pools, poolNames });
 }
 
 async function handleSaveDomainPoolMapping(request, env) {
@@ -705,7 +690,10 @@ async function handleSaveDomainPoolMapping(request, env) {
     if (!body) {
         return badRequest({ success: false, error: '请求体不是有效JSON' });
     }
-    await env.IP_DATA.put('domain_pool_mapping', JSON.stringify(body.mapping));
+    const mapping = body.mapping && typeof body.mapping === 'object' && !Array.isArray(body.mapping)
+        ? Object.fromEntries(Object.entries(body.mapping).filter(([, poolKey]) => isUserPoolKey(poolKey)))
+        : {};
+    await env.IP_DATA.put('domain_pool_mapping', JSON.stringify(mapping));
     return jsonResponse({ success: true });
 }
 
@@ -714,10 +702,11 @@ async function handleCreatePool(request, env) {
     if (!body) {
         return badRequest({ success: false, error: '请求体不是有效JSON' });
     }
-    const poolKey = body.poolKey;
+    const rawName = String(body.poolKey || body.name || body.displayName || '').trim();
+    const poolKey = rawName.startsWith('pool_') ? rawName : (rawName ? `pool_${rawName}` : '');
     
-    if (!poolKey || !poolKey.startsWith('pool_')) {
-        return badRequest({ success: false, error: '池名称必须以pool_开头' });
+    if (!poolKey) {
+        return badRequest({ success: false, error: '请输入池名称' });
     }
     
     // 支持中文、字母、数字、下划线、横杠
@@ -731,7 +720,54 @@ async function handleCreatePool(request, env) {
     }
     
     await env.IP_DATA.put(poolKey, '');
-    return jsonResponse({ success: true });
+    return jsonResponse({ success: true, poolKey, displayName: rawName.replace(/^pool_/, '') });
+}
+
+function validateEditablePoolKey(poolKey) {
+    if (!poolKey || !poolKey.startsWith('pool_')) {
+        return '池名称无效';
+    }
+    if (poolKey.length > GLOBAL_SETTINGS.MAX_POOL_NAME_LENGTH || !/^pool_[\u4e00-\u9fa5a-zA-Z0-9_-]+$/.test(poolKey)) {
+        return `池名称只能包含中文、字母、数字、下划线、横杠，最长${GLOBAL_SETTINGS.MAX_POOL_NAME_LENGTH}字符`;
+    }
+    return '';
+}
+
+async function handleRenamePool(request, env) {
+    const body = await readJsonBody(request);
+    if (!body) {
+        return badRequest({ success: false, error: '请求体不是有效JSON' });
+    }
+
+    const poolKey = body.poolKey || 'pool';
+    const displayName = String(body.displayName || '').trim();
+    if (SYSTEM_POOL_KEYS.has(poolKey)) {
+        return badRequest({ success: false, error: `不能重命名${getPoolDisplayName(poolKey)}` });
+    }
+    if (poolKey !== 'pool' && validateEditablePoolKey(poolKey)) {
+        return badRequest({ success: false, error: '池名称无效' });
+    }
+    if (!displayName) {
+        return badRequest({ success: false, error: '显示名称不能为空' });
+    }
+    if (displayName.length > 40 || !/^[\u4e00-\u9fa5a-zA-Z0-9_\-\s]+$/.test(displayName)) {
+        return badRequest({ success: false, error: '显示名称只能包含中文、字母、数字、空格、下划线、横杠，最长40字符' });
+    }
+
+    const pool = await env.IP_DATA.get(poolKey);
+    if (pool === null && poolKey !== 'pool') {
+        return badRequest({ success: false, error: '池不存在' });
+    }
+
+    const poolNames = await readPoolDisplayNames(env);
+    const defaultName = getPoolDisplayName(poolKey);
+    if (displayName === defaultName) {
+        delete poolNames[poolKey];
+    } else {
+        poolNames[poolKey] = displayName;
+    }
+    await writePoolDisplayNames(env, poolNames);
+    return jsonResponse({ success: true, poolKey, displayName, poolNames });
 }
 
 async function handleDeletePool(url, env) {
@@ -742,9 +778,13 @@ async function handleDeletePool(url, env) {
     }
     
     // 保护系统池
-    const protectedPools = ['pool', 'domain_pool_mapping', 'pool_trash'];
-    if (protectedPools.includes(poolKey)) {
+    if (DELETABLE_PROTECTED_POOL_KEYS.has(poolKey) || validateEditablePoolKey(poolKey)) {
         return badRequest({ success: false, error: `不能删除${getPoolDisplayName(poolKey)}` });
+    }
+
+    const existing = await env.IP_DATA.get(poolKey);
+    if (existing === null) {
+        return badRequest({ success: false, error: '池不存在' });
     }
     
     try {
@@ -769,6 +809,12 @@ async function handleRestoreFromTrash(request, env) {
     const ipsToRestore = body.ips || [];
     const restoreToSource = body.restoreToSource === true;
     const targetPool = body.targetPool || 'pool';
+    if (!Array.isArray(ipsToRestore)) {
+        return badRequest({ success: false, error: 'ips 必须是数组' });
+    }
+    if (!isUserPoolKey(targetPool)) {
+        return badRequest({ success: false, error: '无效的目标池' });
+    }
     
     if (ipsToRestore.length === 0) {
         return badRequest({ success: false, error: '没有选择IP' });
@@ -800,7 +846,7 @@ async function handleRestoreFromTrash(request, env) {
         if (idx !== -1) {
             const sourcePool = trashEntry.slice(idx + 4).trim();
             // 直接返回来源池名（如 pool_a），不需要通过域名映射
-            if (sourcePool && sourcePool.startsWith('pool')) {
+            if (isPoolDataKey(sourcePool)) {
                 return sourcePool;
             }
         }
@@ -865,6 +911,8 @@ function getEditableConfig(config) {
     };
 }
 
+// ==================== Config parsing / normalization ====================
+
 async function handleGetConfig(config) {
     return jsonResponse({ success: true, config: getEditableConfig(config) });
 }
@@ -922,12 +970,6 @@ function normalizeExitFilter(value) {
     return 'any';
 }
 
-function stackToExitFilter(stack) {
-    const normalized = normalizeStackFilter(stack);
-    if (normalized === 'v4') return 'v4';
-    if (normalized === 'v6') return 'v6';
-    return 'any';
-}
 
 function normalizeTargetConfig(target) {
     if (!target || typeof target !== 'object') return null;
@@ -938,7 +980,7 @@ function normalizeTargetConfig(target) {
     const mode = normalizeTargetMode(target.mode);
     const port = String(target.port || '443').trim() || '443';
     const minActive = Math.max(0, parseInt(target.minActive ?? GLOBAL_SETTINGS.DEFAULT_MIN_ACTIVE, 10) || GLOBAL_SETTINGS.DEFAULT_MIN_ACTIVE);
-    const exitFilter = normalizeExitFilter(target.exitFilter || target.stack);
+    const exitFilter = normalizeExitFilter(target.exitFilter);
     const country = String(target.country || '').trim().toUpperCase();
     const asn = normalizeAsnValue(target.asn);
     const zoneIndex = Number.isInteger(target.zoneIndex) ? target.zoneIndex : (target.zoneIndex === '' || target.zoneIndex === undefined ? null : parseInt(target.zoneIndex, 10));
@@ -965,59 +1007,8 @@ function buildManagedDomain(prefix, baseDomain) {
     return cleanPrefix ? `${cleanPrefix}.${cleanBase}` : cleanBase;
 }
 
-function inferBaseDomainFromTargets(targets) {
-    const domains = (Array.isArray(targets) ? targets : [])
-        .map(target => String(target?.domain || '').trim().toLowerCase())
-        .filter(Boolean);
-    if (domains.length === 0) return '';
 
-    const splitDomains = domains.map(domain => domain.split('.').filter(Boolean));
-    if (splitDomains.length === 1) {
-        const labels = splitDomains[0];
-        return labels.length > 2 ? labels.slice(-3).join('.') : labels.join('.');
-    }
 
-    const firstReversed = [...splitDomains[0]].reverse();
-    const common = [];
-    for (let i = 0; i < firstReversed.length; i++) {
-        const label = firstReversed[i];
-        if (splitDomains.every(parts => [...parts].reverse()[i] === label)) {
-            common.push(label);
-        } else {
-            break;
-        }
-    }
-    return common.length >= 2 ? common.reverse().join('.') : '';
-}
-
-function applyZoneDefaultsFromTargets(config) {
-    if (!config || !Array.isArray(config.targets)) return config;
-    if (!Array.isArray(config.zones)) config.zones = [];
-
-    const inferredBase = inferBaseDomainFromTargets(config.targets);
-    if (config.zones.length === 0 && (config.apiKey || config.zoneId || inferredBase)) {
-        config.zones = [{ baseDomain: inferredBase, zoneId: config.zoneId, apiKey: config.apiKey, label: inferredBase || '配置1' }];
-    }
-    if (config.zones.length > 0 && !config.zones[0].baseDomain && inferredBase) {
-        config.zones[0] = { ...config.zones[0], baseDomain: inferredBase, label: config.zones[0].label || inferredBase };
-    }
-
-    config.targets = config.targets.map(target => {
-        const zoneIndex = Number.isInteger(target.zoneIndex) && target.zoneIndex >= 0 ? target.zoneIndex : 0;
-        const zone = config.zones[zoneIndex] || config.zones[0] || {};
-        const baseDomain = target.baseDomain || zone.baseDomain || '';
-        const prefix = target.prefix || inferPrefixFromDomainValue(target.domain, baseDomain);
-        return { ...target, zoneIndex, baseDomain, prefix };
-    });
-    return config;
-}
-
-function inferPrefixFromDomainValue(domain, baseDomain) {
-    const d = String(domain || '').trim();
-    const b = String(baseDomain || '').trim();
-    if (!d || !b || d === b || !d.endsWith('.' + b)) return '';
-    return d.slice(0, -(b.length + 1));
-}
 
 function normalizeZoneConfig(zone) {
     if (!zone || typeof zone !== 'object') return null;
@@ -1029,56 +1020,7 @@ function normalizeZoneConfig(zone) {
     return { name, baseDomain, zoneId, apiKey, label: String(zone.label || baseDomain || name || zoneId || '未命名').trim() };
 }
 
-function parseTarget(input) {
-    if (!input) return null;
-    
-    input = input.trim();
-    let stack = 'v4/v6';
-    const stackMatch = input.match(/\|(v4\/v6|v6\/v4|v4|v6|ipv4_only|ipv6_only|dual_stack)$/i);
-    if (stackMatch) {
-        stack = normalizeStackFilter(stackMatch[1]);
-        input = input.slice(0, stackMatch.index).trim();
-    }
-    
-    // 解析最小活跃数（&后面的数字）
-    let minActive = GLOBAL_SETTINGS.DEFAULT_MIN_ACTIVE;
-    const minActiveMatch = input.match(/&(\d+)$/);
-    if (minActiveMatch) {
-        minActive = parseInt(minActiveMatch[1]);
-        input = input.replace(/&\d+$/, ''); // 移除&数字部分
-    }
-    
-    // TXT模式
-    if (input.startsWith('txt@')) {
-        const rest = input.substring(4);
-        const { domain, port } = parseDomainPort(rest);
-        return { mode: 'TXT', domain, port, minActive, stack, exitFilter: stackToExitFilter(stack) };
-    }
-    
-    // ALL模式在 createConfig 中拆成地址记录和 TXT 两个目标，这里保留标记用于兼容旧配置
-    if (input.startsWith('all@')) {
-        const rest = input.substring(4);
-        const { domain, port } = parseDomainPort(rest);
-        return { mode: 'ALL', domain, port, minActive, stack, exitFilter: stackToExitFilter(stack) };
-    }
-    
-    // 地址记录模式（默认）
-    const { domain, port } = parseDomainPort(input);
-    return { mode: 'A', domain, port, minActive, stack, exitFilter: stackToExitFilter(stack) };
-}
 
-function expandLegacyTargets(targets) {
-    const expanded = [];
-    for (const target of targets || []) {
-        if (!target) continue;
-        if (target.mode === 'ALL') {
-            expanded.push({ ...target, mode: 'A' }, { ...target, mode: 'TXT' });
-        } else {
-            expanded.push(target);
-        }
-    }
-    return expanded.map(normalizeTargetConfig).filter(Boolean);
-}
 
 function normalizeSavedConfig(rawConfig = {}) {
     const zones = Array.isArray(rawConfig.zones)
@@ -1123,19 +1065,6 @@ async function createConfig(env, request = null) {
         ? [{ baseDomain: envBaseDomain, zoneId: config.zoneId, apiKey: config.apiKey, label: envBaseDomain || '环境变量配置' }]
         : [];
     config.authKey = env.AUTH_KEY || DEFAULT_CONFIG.authKey;
-
-    const domainsInput = env.CF_DOMAIN || '';
-    if (domainsInput) {
-        const parts = domainsInput.split(',').map(s => s.trim()).filter(s => s);
-        config.targets = expandLegacyTargets(parts.map(parseTarget).filter(t => t !== null));
-    }
-
-    applyZoneDefaultsFromTargets(config);
-
-    if (config.targets.length === 0) {
-        config.targets = [];
-    }
-
     config.tgToken = env.TG_TOKEN || DEFAULT_CONFIG.tgToken;
     config.tgId = env.TG_ID || DEFAULT_CONFIG.tgId;
     config.tgEnabled = parseBooleanConfig(env.TG_ENABLED, DEFAULT_CONFIG.tgEnabled);
@@ -1159,11 +1088,6 @@ async function createConfig(env, request = null) {
         if (savedConfig.targets.length > 0) {
             config.targets = savedConfig.targets;
         }
-        applyZoneDefaultsFromTargets(config);
-    }
-
-    if (config.targets.length === 0) {
-        config.targets = [{ mode: 'A', domain: '', port: '443', minActive: GLOBAL_SETTINGS.DEFAULT_MIN_ACTIVE, stack: 'v4/v6', exitFilter: 'any' }];
     }
 
     if (request) {
@@ -1171,7 +1095,6 @@ async function createConfig(env, request = null) {
         config.projectUrl = `${url.protocol}//${url.host}`;
     }
 
-    applyZoneDefaultsFromTargets(config);
     return Object.freeze(config);
 }
 
@@ -1196,6 +1119,8 @@ async function batchAddToTrash(env, entries) {
 
     await env.IP_DATA.put(trashKey, trashList.join('\n'));
 }
+
+// ==================== IP parsing / DNS lookup ====================
 
 function parseIPLine(line) {
     line = line.trim();
@@ -1253,7 +1178,7 @@ function parseIPLine(line) {
     return null;
 }
 
-async function cleanIPListAsync(text, resolveDomains = true, config = null) {
+function cleanIPList(text) {
     if (!text) return '';
     const map = new Map();
     const lines = text.split('\n');
@@ -1262,42 +1187,11 @@ async function cleanIPListAsync(text, resolveDomains = true, config = null) {
         line = line.trim();
         if (!line || line.startsWith('#')) continue;
 
-        // 分离注释
-        const { main: mainPart, comment } = splitComment(line);
-
-        // 检测域名格式
-        const domainMatch = mainPart.match(/^([a-zA-Z0-9][-a-zA-Z0-9.]*\.[a-zA-Z]{2,}):?(\d+)?$/);
-        if (domainMatch) {
-            // 如果不解析域名或没有config，跳过域名格式的行
-            if (!resolveDomains || !config) continue;
-
-            const domain = domainMatch[1];
-            const port = domainMatch[2] || '443';
-
-            if (domain.length > 253) continue;
-
-            try {
-                const ips = await resolveDomain(domain, config);
-                if (ips && ips.length > 0) {
-                    ips.slice(0, GLOBAL_SETTINGS.MAX_IPS_PER_DOMAIN).forEach(ip => {
-                        const key = formatAddr(ip, port);
-                        const fullFormat = `${key}${comment}`;
-                        map.set(key, fullFormat);
-                    });
-                }
-                continue;
-            } catch (e) {
-                console.error(`❌ 域名解析失败 ${domain}:`, e);
-                continue;
-            }
+        const parsed = parseIPLine(line);
+        if (parsed) {
+            const key = extractIPKey(parsed);
+            map.set(key, parsed);
         }
-
-    // IP格式
-    const parsed = parseIPLine(line);
-    if (parsed) {
-        const key = extractIPKey(parsed);
-        map.set(key, parsed);
-    }
     }
 
     return Array.from(map.values()).join('\n');
@@ -1331,7 +1225,7 @@ async function loadFromRemoteUrl(url) {
         });
         if (r.ok) {
             const text = await r.text();
-            return await cleanIPListAsync(text, false); // 不解析域名，只清洗IP格式
+            return cleanIPList(text);
         }
     } catch (e) {
         console.error(`❌ 远程加载失败 ${url}:`, e);
@@ -1406,6 +1300,8 @@ function normalizeTextValue(value) {
     if (value === undefined || value === null) return '';
     return String(value).trim();
 }
+
+// ==================== Proxy check normalization ====================
 
 function normalizeNumberValue(value, fallback = '-') {
     if (value === undefined || value === null || value === '') return fallback;
@@ -1691,21 +1587,8 @@ async function checkProxyIPOnce(addr, apiUrl) {
     }
 }
 
-// 地址格式化：智能添加默认端口443，处理IPv6方括号
 function normalizeCheckAddr(input) {
-    let addr = input.trim();
-    if (addr.startsWith('[')) {
-        if (!addr.includes(']:')) {
-            addr = addr.endsWith(']') ? `${addr}:443` : `${addr}]:443`;
-        }
-    } else if (!addr.includes(':') || (addr.match(/:/g) || []).length > 1) {
-        if ((addr.match(/:/g) || []).length > 1) {
-            addr = `[${addr}]:443`;
-        } else {
-            addr = `${addr}:443`;
-        }
-    }
-    return addr;
+    return parseAddr(input || '').address;
 }
 
 async function checkProxyIP(input, config) {
@@ -1765,6 +1648,8 @@ async function fetchCF(config, path, method = 'GET', body = null) {
     }
 }
 
+// ==================== Maintenance workflow ====================
+
 function getTargetCFConfig(config, target) {
     const zone = Number.isInteger(target?.zoneIndex) && Array.isArray(config.zones)
         ? config.zones[target.zoneIndex]
@@ -1774,6 +1659,41 @@ function getTargetCFConfig(config, target) {
         apiKey: zone?.apiKey || config.apiKey,
         zoneId: zone?.zoneId || config.zoneId
     };
+}
+
+async function deleteDNSRecord(cfConfig, id) {
+    return await fetchCF(cfConfig, `/zones/${cfConfig.zoneId}/dns_records/${id}`, 'DELETE') !== null;
+}
+
+async function upsertTXTRecord(cfConfig, domain, recordId, ips) {
+    const content = `"${ips.join(',')}"`;
+    if (recordId) {
+        return await fetchCF(cfConfig, `/zones/${cfConfig.zoneId}/dns_records/${recordId}`, 'PUT', {
+            type: 'TXT',
+            name: domain,
+            content,
+            ttl: 60
+        }) !== null;
+    }
+    return await fetchCF(cfConfig, `/zones/${cfConfig.zoneId}/dns_records`, 'POST', {
+        type: 'TXT',
+        name: domain,
+        content,
+        ttl: 60
+    }) !== null;
+}
+
+async function addAddressRecord(cfConfig, domain, ip) {
+    const content = String(ip || '').replace(/^\[/, '').replace(/\]$/, '');
+    const recordType = getDNSRecordTypeForIP(content);
+    const result = await fetchCF(cfConfig, `/zones/${cfConfig.zoneId}/dns_records`, 'POST', {
+        type: recordType,
+        name: domain,
+        content,
+        ttl: 60,
+        proxied: false
+    });
+    return { ok: result !== null, type: recordType };
 }
 
 async function getCandidateIPs(env, target, addLog, poolKey) {
@@ -1801,130 +1721,49 @@ async function getCandidateIPs(env, target, addLog, poolKey) {
     return candidates;
 }
 
-async function maintainRecordsCommon(options) {
-    const {
-        env,
-        target,
-        addLog,
-        report,
-        poolKey,
-        checkFn,
-        getCurrentIPs,
-        deleteRecord,
-        addRecord,
-        shouldSkipCandidate
-    } = options;
-
-    const currentIPs = getCurrentIPs();
-    let poolList = parsePoolList(await env.IP_DATA.get(poolKey));
-    report.poolKeyUsed = poolKey;
-
-    let validIPs = [];
-    let poolModified = false;
-    const trashBatch = [];
-
-    // 并行检测所有现有IP
-    const checkSettled = await Promise.allSettled(
-        currentIPs.map(item => checkFn(item.addr).then(
-            r => ({ item, result: normalizeCheckResult(r, item.addr) }),
+async function checkCurrentItems(currentItems, checkFn) {
+    const settled = await Promise.allSettled(
+        currentItems.map(item => checkFn(item.addr).then(
+            result => ({ item, result: normalizeCheckResult(result, item.addr) }),
             () => ({ item, result: normalizeCheckResult({ success: false }, item.addr) })
         ))
     );
-    const checkResults = checkSettled.map(r =>
-        r.status === 'fulfilled' ? r.value : { item: currentIPs[0], result: normalizeCheckResult({ success: false }, currentIPs[0]?.addr || '') }
-    );
-    // 串行处理结果（删除操作需要顺序执行）
-    for (const { item, result: checkResult } of checkResults) {
-        report.checkDetails.push({
-            ip: item.addr,
-            status: checkResult.success ? '✅ 活跃' : '❌ 失效',
-            colo: checkResult.colo || 'N/A',
-            time: checkResult.responseTime || '-',
-            country: checkResult.country || 'null',
-            asn: checkResult.asn || 'null'
-        });
+    return settled
+        .map(r => r.status === 'fulfilled' ? r.value : null)
+        .filter(Boolean);
+}
 
-            if (checkResult.success && exitFilterMatchesResult(checkResult, target.exitFilter) && targetMetaMatchesResult(checkResult, target)) {
-                validIPs.push(item.ip);
-                addLog(`  ✅ ${item.addr} - ${checkResult.colo} (${checkResult.responseTime}ms)`);
-        } else if (checkResult.success) {
-            report.removed.push({ ip: item.addr, reason: '出口/国家/ASN不匹配', colo: checkResult.colo || 'N/A', time: checkResult.responseTime || '-', country: checkResult.country || 'null', asn: checkResult.asn || 'null' });
-            await deleteRecord(item.id);
+function appendCheckDetail(report, item, result) {
+    report.checkDetails.push({
+        ip: item.addr,
+        status: result.success ? '✅ 活跃' : '❌ 失效',
+        colo: result.colo || 'N/A',
+        time: result.responseTime || '-',
+        country: result.country || 'null',
+        asn: result.asn || 'null'
+    });
+}
 
-            poolList = poolList.filter(p => extractIPKey(p) !== item.addr);
-            report.poolRemoved++;
-            poolModified = true;
+function removePoolEntry(poolList, ipAddr) {
+    const before = poolList.length;
+    const next = poolList.filter(p => extractIPKey(p) !== ipAddr);
+    return { list: next, removed: before !== next.length };
+}
 
-            trashBatch.push({ ipAddr: item.addr, reason: '出口/国家/ASN不匹配', poolKey });
-            addLog(`  ❌ ${item.addr} - 出口/国家/ASN不匹配，已删除`);
-        } else {
-            report.removed.push({ ip: item.addr, reason: '检测失效', colo: checkResult.colo || 'N/A', time: checkResult.responseTime || '-', country: checkResult.country || 'null', asn: checkResult.asn || 'null' });
-            await deleteRecord(item.id);
+async function savePoolAndTrash(env, poolKey, poolList, poolModified, trashBatch) {
+    if (trashBatch.length > 0) await batchAddToTrash(env, trashBatch);
+    if (poolModified) await env.IP_DATA.put(poolKey, poolList.join('\n'));
+}
 
-            poolList = poolList.filter(p => extractIPKey(p) !== item.addr);
-            report.poolRemoved++;
-            poolModified = true;
-
-            trashBatch.push({ ipAddr: item.addr, reason: '维护失效', poolKey });
-            addLog(`  ❌ ${item.addr} - 失效已删除，已放入垃圾桶`);
-        }
-    }
-
-    report.beforeActive = validIPs.length;
-
-    // 补充IP
-    if (validIPs.length < target.minActive) {
-        addLog(`需补充: ${target.minActive - validIPs.length} 个`);
-        const candidates = await getCandidateIPs(env, target, addLog, poolKey);
-
-        for (const item of candidates) {
-            if (validIPs.length >= target.minActive) break;
-            const ipPort = extractIPKey(item);
-            if (!ipPort || shouldSkipCandidate(ipPort, validIPs)) continue;
-
-            const checkResult = await checkFn(ipPort);
-            const normalizedCheck = normalizeCheckResult(checkResult, ipPort);
-            if (normalizedCheck && normalizedCheck.success && (!exitFilterMatchesResult(normalizedCheck, target.exitFilter) || !targetMetaMatchesResult(normalizedCheck, target))) {
-                addLog(`  ⏭️ ${ipPort} - 出口/国家/ASN不匹配`);
-                continue;
-            }
-            if (normalizedCheck && normalizedCheck.success) {
-                const ip = extractHostFromAddr(ipPort);
-                await addRecord(ip);
-                validIPs.push(ip);
-                report.added.push({ ip: ipPort, colo: normalizedCheck.colo || 'N/A', time: normalizedCheck.responseTime || '-', country: normalizedCheck.country || 'null', asn: normalizedCheck.asn || 'null' });
-                addLog(`  ✅ ${ipPort} - ${normalizedCheck.colo} (${normalizedCheck.responseTime}ms)`);
-            } else {
-                poolList = poolList.filter(p => extractIPKey(p) !== ipPort);
-                report.poolRemoved++;
-                poolModified = true;
-                trashBatch.push({ ipAddr: ipPort, reason: '补充检测失败', poolKey });
-                addLog(`  ❌ ${ipPort} - 检测失败，从池中移除并放入垃圾桶`);
-            }
-        }
-
-        if (validIPs.length < target.minActive) {
-            report.poolExhausted = true;
-            addLog(`⚠️ ${poolKey} 库存不足，无法达到最小活跃数 ${target.minActive}`);
-        }
-    }
-
-    // 批量写入垃圾桶
-    if (trashBatch.length > 0) {
-        await batchAddToTrash(env, trashBatch);
-    }
-
-    if (poolModified) {
-        await env.IP_DATA.put(poolKey, poolList.join('\n'));
-    }
-
-    report.poolAfterCount = poolList.length;
-    report.afterActive = validIPs.length;
+function sameAddressSet(a, b) {
+    if (a.length !== b.length) return false;
+    const set = new Set(a);
+    return b.every(item => set.has(item));
 }
 
 async function maintainARecords(env, target, addLog, report, poolKey, checkFn, config) {
-        const filters = [target.country ? `国家:${target.country}` : '', target.asn ? `ASN:${target.asn}` : ''].filter(Boolean).join(', ') || '无';
-        addLog(`📋 维护地址记录(A/AAAA): ${target.domain}:${target.port} (最小活跃数: ${target.minActive}, 筛选: ${filters})`);
+    const filters = [target.country ? `国家:${target.country}` : '', target.asn ? `ASN:${target.asn}` : ''].filter(Boolean).join(', ') || '无';
+    addLog(`📋 维护地址记录(A/AAAA): ${target.domain}:${target.port} (最小活跃数: ${target.minActive}, 筛选: ${filters})`);
     const cfConfig = getTargetCFConfig(config, target);
 
     const [aRecords, aaaaRecords] = await Promise.all([
@@ -1941,36 +1780,93 @@ async function maintainARecords(env, target, addLog, report, poolKey, checkFn, c
     const records = [...aRecords, ...aaaaRecords];
     addLog(`当前地址记录: A ${aRecords.length} 条 / AAAA ${aaaaRecords.length} 条`);
 
-    // 使用通用维护逻辑
-    await maintainRecordsCommon({
-        env,
-        target,
-        addLog,
-        report,
-        poolKey,
-        checkFn,
-        getCurrentIPs: () => records.map(({ id, content, type }) => ({ id, type, addr: formatAddr(content, target.port), ip: content })),
-        deleteRecord: async (id) => {
-            const r = await fetchCF(cfConfig, `/zones/${cfConfig.zoneId}/dns_records/${id}`, 'DELETE');
-            if (r === null) addLog(`  ⚠️ 删除地址记录失败: ${id}`);
-        },
-        addRecord: async (ip) => {
-            const recordType = getDNSRecordTypeForIP(ip);
-            const r = await fetchCF(cfConfig, `/zones/${cfConfig.zoneId}/dns_records`, 'POST', {
-                type: recordType,
-                name: target.domain,
-                content: ip.replace(/^\[/, '').replace(/\]$/, ''),
-                ttl: 60,
-                proxied: false
-            });
-            if (r === null) addLog(`  ⚠️ 添加${recordType}记录失败: ${ip}`);
-        },
-        shouldSkipCandidate: (ipPort, activeList) => {
-            const ip = extractHostFromAddr(ipPort);
-            const port = extractPortFromAddr(ipPort);
-            return port !== target.port || activeList.includes(ip);
+    let poolList = parsePoolList(await env.IP_DATA.get(poolKey));
+    let poolModified = false;
+    const trashBatch = [];
+    const validHosts = [];
+    report.poolKeyUsed = poolKey;
+
+    const currentItems = records.map(({ id, content, type }) => ({
+        id,
+        type,
+        addr: formatAddr(content, target.port),
+        host: content
+    }));
+
+    for (const { item, result } of await checkCurrentItems(currentItems, checkFn)) {
+        appendCheckDetail(report, item, result);
+        const matches = result.success && exitFilterMatchesResult(result, target.exitFilter) && targetMetaMatchesResult(result, target);
+        if (matches) {
+            validHosts.push(item.host);
+            addLog(`  ✅ ${item.addr} - ${result.colo} (${result.responseTime}ms)`);
+            continue;
         }
-    });
+
+        const reason = result.success ? '出口/国家/ASN不匹配' : '检测失效';
+        report.removed.push({ ip: item.addr, reason, colo: result.colo || 'N/A', time: result.responseTime || '-', country: result.country || 'null', asn: result.asn || 'null' });
+        await deleteDNSRecord(cfConfig, item.id);
+
+        const removed = removePoolEntry(poolList, item.addr);
+        poolList = removed.list;
+        if (removed.removed) {
+            report.poolRemoved++;
+            poolModified = true;
+        }
+        trashBatch.push({ ipAddr: item.addr, reason: result.success ? '出口/国家/ASN不匹配' : '维护失效', poolKey });
+        addLog(result.success
+            ? `  ❌ ${item.addr} - 出口/国家/ASN不匹配，已删除`
+            : `  ❌ ${item.addr} - 失效已删除，已放入垃圾桶`);
+    }
+
+    report.beforeActive = validHosts.length;
+
+    if (validHosts.length < target.minActive) {
+        addLog(`需补充: ${target.minActive - validHosts.length} 个`);
+        const candidates = await getCandidateIPs(env, target, addLog, poolKey);
+
+        for (const item of candidates) {
+            if (validHosts.length >= target.minActive) break;
+            const ipPort = extractIPKey(item);
+            const parsed = parseAddr(ipPort, target.port);
+            if (!ipPort || parsed.port !== target.port || validHosts.includes(parsed.host)) continue;
+
+            const result = normalizeCheckResult(await checkFn(ipPort), ipPort);
+            const matches = result.success && exitFilterMatchesResult(result, target.exitFilter) && targetMetaMatchesResult(result, target);
+            if (!matches) {
+                if (result.success) {
+                    addLog(`  ⏭️ ${ipPort} - 出口/国家/ASN不匹配`);
+                } else {
+                    const removed = removePoolEntry(poolList, ipPort);
+                    poolList = removed.list;
+                    if (removed.removed) {
+                        report.poolRemoved++;
+                        poolModified = true;
+                    }
+                    trashBatch.push({ ipAddr: ipPort, reason: '补充检测失败', poolKey });
+                    addLog(`  ❌ ${ipPort} - 检测失败，从池中移除并放入垃圾桶`);
+                }
+                continue;
+            }
+
+            const added = await addAddressRecord(cfConfig, target.domain, parsed.host);
+            if (!added.ok) {
+                addLog(`  ⚠️ 添加${added.type}记录失败: ${parsed.host}`);
+                continue;
+            }
+            validHosts.push(parsed.host);
+            report.added.push({ ip: ipPort, colo: result.colo || 'N/A', time: result.responseTime || '-', country: result.country || 'null', asn: result.asn || 'null' });
+            addLog(`  ✅ ${ipPort} - ${result.colo} (${result.responseTime}ms)`);
+        }
+
+        if (validHosts.length < target.minActive) {
+            report.poolExhausted = true;
+            addLog(`⚠️ ${poolKey} 库存不足，无法达到最小活跃数 ${target.minActive}`);
+        }
+    }
+
+    await savePoolAndTrash(env, poolKey, poolList, poolModified, trashBatch);
+    report.poolAfterCount = poolList.length;
+    report.afterActive = validHosts.length;
 }
 
 async function maintainTXTRecords(env, target, addLog, report, poolKey, checkFn, config) {
@@ -1979,73 +1875,102 @@ async function maintainTXTRecords(env, target, addLog, report, poolKey, checkFn,
     const cfConfig = getTargetCFConfig(config, target);
 
     const records = await fetchCF(cfConfig, `/zones/${cfConfig.zoneId}/dns_records?name=${target.domain}&type=TXT`);
-
     if (records === null) {
         addLog(`❌ 无法获取TXT记录 - 请检查CF配置`);
         report.configError = true;
         return;
     }
 
-    let currentIPs = [];
-    let recordId = null;
+    const record = records?.[0] || null;
+    const originalIPs = record ? parseTXTContent(record.content) : [];
+    addLog(`当前TXT: ${originalIPs.length} 个IP`);
 
-    if (records?.length > 0) {
-        recordId = records[0].id;
-        currentIPs = parseTXTContent(records[0].content);
-        addLog(`当前TXT: ${currentIPs.length} 个IP`);
+    let poolList = parsePoolList(await env.IP_DATA.get(poolKey));
+    let poolModified = false;
+    const trashBatch = [];
+    const validIPs = [];
+    report.poolKeyUsed = poolKey;
+
+    const currentItems = originalIPs.map(addr => ({ addr, ip: addr }));
+    for (const { item, result } of await checkCurrentItems(currentItems, checkFn)) {
+        appendCheckDetail(report, item, result);
+        const matches = result.success && exitFilterMatchesResult(result, target.exitFilter) && targetMetaMatchesResult(result, target);
+        if (matches) {
+            validIPs.push(item.addr);
+            addLog(`  ✅ ${item.addr} - ${result.colo} (${result.responseTime}ms)`);
+            continue;
+        }
+
+        const reason = result.success ? '出口/国家/ASN不匹配' : '检测失效';
+        report.removed.push({ ip: item.addr, reason, colo: result.colo || 'N/A', time: result.responseTime || '-', country: result.country || 'null', asn: result.asn || 'null' });
+        const removed = removePoolEntry(poolList, item.addr);
+        poolList = removed.list;
+        if (removed.removed) {
+            report.poolRemoved++;
+            poolModified = true;
+        }
+        trashBatch.push({ ipAddr: item.addr, reason: result.success ? '出口/国家/ASN不匹配' : '维护失效', poolKey });
+        addLog(result.success
+            ? `  ❌ ${item.addr} - 出口/国家/ASN不匹配，已从TXT移除`
+            : `  ❌ ${item.addr} - 失效，已从TXT移除并放入垃圾桶`);
     }
 
-    // 记录原始内容用于后续比较
-    const originalIPs = [...currentIPs];
+    report.beforeActive = validIPs.length;
 
-    // 使用通用维护逻辑（TXT模式：deleteRecord/addRecord 为空操作，最后统一更新）
-    await maintainRecordsCommon({
-        env,
-        target,
-        addLog,
-        report,
-        poolKey,
-        checkFn,
-        getCurrentIPs: () => currentIPs.map(addr => ({ id: recordId, addr, ip: addr })),
-        deleteRecord: async () => { /* TXT模式延迟到最后统一更新 */ },
-        addRecord: async () => { /* TXT模式延迟到最后统一更新 */ },
-        shouldSkipCandidate: (ipPort, activeList) => activeList.includes(ipPort)
-    });
+    if (validIPs.length < target.minActive) {
+        addLog(`需补充: ${target.minActive - validIPs.length} 个`);
+        const candidates = await getCandidateIPs(env, target, addLog, poolKey);
 
-    // 从report中提取最终有效IP列表
-    // 现有IP中有效的 = 原始IP - 被移除的IP
-    const removedSet = new Set(report.removed.map(r => r.ip));
-    const survivedIPs = originalIPs.filter(ip => !removedSet.has(ip));
-    // 新增的IP
-    const addedIPs = report.added.map(a => a.ip);
-    // 最终有效IP列表
-    const finalValidIPs = [...survivedIPs, ...addedIPs];
+        for (const item of candidates) {
+            if (validIPs.length >= target.minActive) break;
+            const ipPort = extractIPKey(item);
+            if (!ipPort || validIPs.includes(ipPort)) continue;
 
-    // TXT记录特殊处理：统一更新
-    const newContent = finalValidIPs.length > 0 ? `"${finalValidIPs.join(',')}"` : '';
-    const currentContent = originalIPs.length > 0 ? `"${originalIPs.join(',')}"` : '';
-
-    if (newContent !== currentContent) {
-        if (newContent === '' && recordId) {
-            const r = await fetchCF(cfConfig, `/zones/${cfConfig.zoneId}/dns_records/${recordId}`, 'DELETE');
-            addLog(r !== null ? `📝 TXT记录已删除（所有IP失效）` : `⚠️ TXT记录删除失败`);
-        } else if (newContent !== '') {
-            if (recordId) {
-                const r = await fetchCF(cfConfig, `/zones/${cfConfig.zoneId}/dns_records/${recordId}`, 'PUT', {
-                    type: 'TXT', name: target.domain, content: newContent, ttl: 60
-                });
-                addLog(r !== null ? `📝 TXT已更新` : `⚠️ TXT更新失败`);
-            } else {
-                const r = await fetchCF(cfConfig, `/zones/${cfConfig.zoneId}/dns_records`, 'POST', {
-                    type: 'TXT', name: target.domain, content: newContent, ttl: 60
-                });
-                addLog(r !== null ? `📝 TXT已创建` : `⚠️ TXT创建失败`);
+            const result = normalizeCheckResult(await checkFn(ipPort), ipPort);
+            const matches = result.success && exitFilterMatchesResult(result, target.exitFilter) && targetMetaMatchesResult(result, target);
+            if (!matches) {
+                if (result.success) {
+                    addLog(`  ⏭️ ${ipPort} - 出口/国家/ASN不匹配`);
+                } else {
+                    const removed = removePoolEntry(poolList, ipPort);
+                    poolList = removed.list;
+                    if (removed.removed) {
+                        report.poolRemoved++;
+                        poolModified = true;
+                    }
+                    trashBatch.push({ ipAddr: ipPort, reason: '补充检测失败', poolKey });
+                    addLog(`  ❌ ${ipPort} - 检测失败，从池中移除并放入垃圾桶`);
+                }
+                continue;
             }
+
+            validIPs.push(ipPort);
+            report.added.push({ ip: ipPort, colo: result.colo || 'N/A', time: result.responseTime || '-', country: result.country || 'null', asn: result.asn || 'null' });
+            addLog(`  ✅ ${ipPort} - ${result.colo} (${result.responseTime}ms)`);
+        }
+
+        if (validIPs.length < target.minActive) {
+            report.poolExhausted = true;
+            addLog(`⚠️ ${poolKey} 库存不足，无法达到最小活跃数 ${target.minActive}`);
+        }
+    }
+
+    const changed = !sameAddressSet(validIPs, originalIPs);
+    if (changed) {
+        if (validIPs.length === 0 && record?.id) {
+            const ok = await deleteDNSRecord(cfConfig, record.id);
+            addLog(ok ? `📝 TXT记录已删除（所有IP失效）` : `⚠️ TXT记录删除失败`);
+        } else if (validIPs.length > 0) {
+            const ok = await upsertTXTRecord(cfConfig, target.domain, record?.id, validIPs);
+            addLog(ok ? (record?.id ? `📝 TXT已更新` : `📝 TXT已创建`) : `⚠️ TXT保存失败`);
         }
         report.txtUpdated = true;
     }
-}
 
+    await savePoolAndTrash(env, poolKey, poolList, poolModified, trashBatch);
+    report.poolAfterCount = poolList.length;
+    report.afterActive = validIPs.length;
+}
 async function maintainAllDomains(env, isManual = false, config) {
     const allReports = [];
     const startTime = Date.now();
@@ -2071,11 +1996,11 @@ async function maintainAllDomains(env, isManual = false, config) {
         return res;
     };
 
-    const allKeys = await env.IP_DATA.list();
+    const poolKeys = await listPoolKeys(env);
     const poolSettled = await Promise.allSettled(
-        allKeys.keys.filter(k => k.name.startsWith('pool')).map(async k => {
-            const raw = await env.IP_DATA.get(k.name) || '';
-            return [k.name, parsePoolList(raw).length];
+        poolKeys.map(async poolKey => {
+            const raw = await env.IP_DATA.get(poolKey) || '';
+            return [poolKey, parsePoolList(raw).length];
         })
     );
     const poolEntries = poolSettled
@@ -2197,7 +2122,7 @@ function formatIPChanges(added, removed, port = '', minActive = 0, afterActive =
     if (added && added.length > 0) {
         msg += `📈 新增 ${added.length} 个IP\n`;
         added.forEach(item => {
-            const displayIP = extractPortFromAddr(item.ip, '') ? item.ip : formatAddr(item.ip, port);
+            const displayIP = hasExplicitPort(item.ip) ? item.ip : parseAddr(item.ip, port || '443').address;
             msg += `   ✅ <code>${displayIP}</code>\n`;
             msg += `      ${formatReportMeta(item)}\n`;
         });
@@ -2336,6 +2261,8 @@ function renderHTML(C, runtimeState = {}) {
     const kvReady = runtimeState.kvReady !== false;
     const version = APP_VERSION;
     
+    // The Worker is intentionally single-file deployable. Keep front-end code
+    // grouped by the anchors below instead of extracting external assets.
     const html = `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -2767,9 +2694,19 @@ function renderHTML(C, runtimeState = {}) {
             gap: 8px;
             margin-top: 12px;
         }
+        .pool-tools {
+            display: flex;
+            gap: 6px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+        .pool-tools .form-select {
+            width: 160px;
+            border-radius: 8px;
+        }
         .filter-line {
             display: grid;
-            grid-template-columns: minmax(0, 1fr) 34px auto auto auto;
+            grid-template-columns: minmax(0, 1fr) 34px repeat(3, minmax(58px, 76px));
             gap: 6px;
             align-items: center;
         }
@@ -2823,27 +2760,36 @@ function renderHTML(C, runtimeState = {}) {
             color: #991b1b;
             background: #fee2e2;
         }
-        .latency-badge {
+        .pill-badge, .latency-badge, .colo-badge {
             display: inline-flex;
-            min-width: 64px;
             justify-content: center;
+            align-items: center;
             border-radius: 999px;
             padding: 5px 9px;
             font-size: 12px;
             font-weight: 700;
+            line-height: 1.15;
+            white-space: nowrap;
+        }
+        .latency-badge {
+            min-width: 64px;
             color: #1d4ed8;
             background: #dbeafe;
         }
         .colo-badge {
-            display: inline-flex;
             min-width: 48px;
-            justify-content: center;
-            border-radius: 999px;
-            padding: 5px 9px;
-            font-size: 12px;
-            font-weight: 700;
             color: #374151;
             background: #f3f4f6;
+        }
+        .address-pill {
+            max-width: 240px;
+            min-width: 150px;
+            font-family: 'SF Mono', Consolas, monospace;
+            color: #0f172a;
+            background: #f8fafc;
+            border: 1px solid #e2e8f0;
+            overflow: hidden;
+            text-overflow: ellipsis;
         }
         .switch-row {
             display: flex;
@@ -2857,6 +2803,40 @@ function renderHTML(C, runtimeState = {}) {
             gap: 6px;
             font-size: 13px;
             color: #4b5563;
+        }
+        .config-toolbar {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+        .config-lock-hint {
+            color: #6b7280;
+            font-size: 12px;
+            background: #f5f5f7;
+            border-radius: 999px;
+            padding: 6px 10px;
+        }
+        #page-config.config-locked input:not([readonly]),
+        #page-config.config-locked select,
+        #page-config.config-locked textarea {
+            pointer-events: none;
+            color: #6b7280;
+            background: #f5f5f7;
+        }
+        #page-config.config-locked .config-edit-action,
+        #page-config.config-locked .config-add-action,
+        #page-config.config-locked .switch input {
+            pointer-events: none;
+        }
+        #page-config.config-locked .config-mini-card {
+            cursor: default;
+        }
+        #page-config button:disabled {
+            opacity: .55;
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
         }
         .top-nav {
             display: flex;
@@ -2959,16 +2939,18 @@ function renderHTML(C, runtimeState = {}) {
             }
         }
         .ip-info-tag {
-            display: inline-block;
+            display: inline-flex;
+            align-items: center;
             background: #e8f4ff;
             color: var(--primary);
-            padding: 2px 6px;
-            border-radius: 4px;
+            padding: 3px 7px;
+            border-radius: 999px;
             font-size: 11px;
-            margin-left: 4px;
+            line-height: 1.2;
+            white-space: nowrap;
         }
         .exit-list-cell {
-            min-width: 430px;
+            min-width: 520px;
             text-align: left;
             max-width: 760px;
             overflow-x: auto;
@@ -2976,7 +2958,7 @@ function renderHTML(C, runtimeState = {}) {
         }
         .exit-detail {
             display: grid;
-            grid-template-columns: 48px minmax(260px, max-content) minmax(90px, .7fr) minmax(120px, 1fr);
+            grid-template-columns: 54px minmax(180px, 240px) minmax(86px, max-content) minmax(160px, max-content);
             gap: 6px;
             align-items: center;
             margin: 2px 0;
@@ -2986,6 +2968,11 @@ function renderHTML(C, runtimeState = {}) {
             width: max-content;
             min-width: 100%;
         }
+        .exit-detail.is-dual {
+            background: linear-gradient(90deg, rgba(52,199,89,.08), rgba(0,122,255,.06));
+            border-radius: 8px;
+            padding: 5px 6px;
+        }
         .exit-detail:last-child {
             border-bottom: 0;
         }
@@ -2994,11 +2981,17 @@ function renderHTML(C, runtimeState = {}) {
             font-weight: 700;
             color: #1d1d1f;
             white-space: nowrap;
-            overflow: visible;
-            text-overflow: clip;
+            overflow: hidden;
+            text-overflow: ellipsis;
             font-size: 11px;
             line-height: 1.25;
             cursor: pointer;
+            border: 1px solid #e2e8f0;
+            background: #fff;
+            border-radius: 999px;
+            padding: 5px 9px;
+            min-width: 0;
+            width: 100%;
         }
         .copyable {
             cursor: pointer;
@@ -3012,16 +3005,15 @@ function renderHTML(C, runtimeState = {}) {
             color: #4338ca;
         }
         .exit-field {
-            min-width: 0;
+            max-width: 260px;
             white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
+            overflow: visible;
+            text-overflow: clip;
         }
         @media (max-width: 768px) {
             .ip-info-tag {
                 font-size: 9px;
                 padding: 2px 4px;
-                margin-left: 2px;
             }
         }
 
@@ -3112,11 +3104,19 @@ function renderHTML(C, runtimeState = {}) {
         }
         
         @media (max-width: 768px) {
+            .pool-tools {
+                width: 100%;
+                display: grid;
+                grid-template-columns: minmax(0, 1fr) repeat(4, 38px);
+            }
+            .pool-tools .form-select {
+                width: 100%;
+            }
             .exit-list-cell {
-                min-width: 360px;
+                min-width: 480px;
             }
             .exit-detail {
-                grid-template-columns: 44px minmax(240px, max-content) minmax(90px, .7fr) minmax(110px, 1fr);
+                grid-template-columns: 48px minmax(160px, 220px) minmax(72px, max-content) minmax(130px, max-content);
             }
             .badge {
                 font-size: 10px;
@@ -3179,7 +3179,7 @@ function renderHTML(C, runtimeState = {}) {
                 display: block !important;
             }
             .filter-line {
-                grid-template-columns: 1fr 34px;
+                grid-template-columns: minmax(0, 1fr) 34px repeat(3, minmax(54px, 1fr));
             }
             .filter-line .btn {
                 padding: 7px 9px !important;
@@ -3200,386 +3200,6 @@ function renderHTML(C, runtimeState = {}) {
                 flex-shrink: 0;
             }
         }
-
-        /* ===== Plan A mobile real list: stable, compact, no table squeezing ===== */
-        .status-mobile-list {
-            display: none;
-        }
-
-        @media (max-width: 768px) {
-            body {
-                background: #f7f8fb;
-            }
-
-            .container {
-                padding-left: 12px;
-                padding-right: 12px;
-            }
-
-            .hero {
-                padding: 18px 0 12px;
-            }
-
-            .hero h1 {
-                font-size: 1.45rem;
-                margin-bottom: 10px;
-                color: #0f172a;
-            }
-
-            .guide-toggle {
-                width: 30px;
-                height: 30px;
-                flex: 0 0 30px;
-            }
-
-            .config-info {
-                font-size: 11px;
-                line-height: 1.35;
-                padding: 8px 10px;
-                flex: 1 1 auto;
-            }
-
-            .domain-selector,
-            .domain-selector select {
-                width: 100%;
-                max-width: none;
-            }
-
-            .domain-selector select {
-                height: 46px;
-                border-radius: 14px;
-                font-size: 15px;
-                font-weight: 700;
-                padding: 10px 14px;
-                color: #0f172a;
-                background-color: #fff;
-                border: 1px solid #e2e8f0;
-            }
-
-            .top-nav {
-                display: grid;
-                grid-template-columns: repeat(2, minmax(0, 1fr));
-                gap: 6px;
-                padding: 5px;
-                margin: 12px 0 16px;
-                background: #edf2f7;
-                border: 1px solid #e2e8f0;
-                border-radius: 16px;
-            }
-
-            .nav-tab {
-                height: 40px;
-                padding: 0 10px;
-                border-radius: 12px;
-                border: 0;
-                background: transparent;
-                color: #475569;
-                font-size: 14px;
-                font-weight: 700;
-            }
-
-            .nav-tab.active {
-                background: #fff;
-                color: #2563eb;
-                border: 0;
-                box-shadow: 0 1px 4px rgba(15, 23, 42, .06);
-            }
-
-            .card {
-                border: 1px solid #e2e8f0;
-                border-radius: 18px;
-                box-shadow: 0 4px 18px rgba(15, 23, 42, .05);
-                margin-bottom: 16px;
-            }
-
-            .card.p-3,
-            .card.p-4 {
-                padding: 14px !important;
-            }
-
-            #page-dashboard > .card.p-3 > .d-flex.justify-content-between.align-items-center.mb-3.flex-wrap.gap-2 {
-                display: block !important;
-            }
-
-            #page-dashboard > .card.p-3 h6 {
-                font-size: 18px;
-                margin-bottom: 12px !important;
-            }
-
-            #page-dashboard > .card.p-3 > .d-flex.justify-content-between.align-items-center.mb-3.flex-wrap.gap-2 > .d-flex.gap-2.align-items-center.flex-grow-1 {
-                display: grid !important;
-                grid-template-columns: minmax(0, 1fr) 58px 58px;
-                gap: 8px !important;
-                width: 100% !important;
-                max-width: none !important;
-            }
-
-            #lookup-domain {
-                min-width: 0;
-                width: 100%;
-            }
-
-            #manual-add-section {
-                margin-bottom: 12px !important;
-            }
-
-            #manual-add-section .input-group {
-                display: grid !important;
-                grid-template-columns: minmax(0, 1fr) 64px;
-                gap: 8px;
-                align-items: center;
-                width: 100%;
-            }
-
-            #manual-add-section .form-control {
-                width: 100%;
-                min-width: 0;
-            }
-
-            .form-control,
-            .form-select {
-                height: 40px;
-                min-height: 40px;
-                padding: 8px 10px;
-                border: 1px solid #e2e8f0;
-                border-radius: 12px !important;
-                background: #f8fafc;
-                font-size: 13px;
-            }
-
-            .btn,
-            .btn-sm {
-                height: 40px;
-                min-height: 40px;
-                padding: 0 10px !important;
-                border-radius: 12px !important;
-                font-size: 13px !important;
-                font-weight: 700;
-                white-space: nowrap;
-            }
-
-            #status-display {
-                max-height: none !important;
-                overflow: visible !important;
-                border: 0 !important;
-                background: transparent !important;
-                border-radius: 0;
-            }
-
-            #status-display > .table-responsive {
-                display: none !important;
-            }
-
-            .status-mobile-list {
-                display: block;
-                background: #fff;
-                border: 1px solid #e2e8f0;
-                border-radius: 14px;
-                overflow: hidden;
-            }
-
-            .mobile-ip-message {
-                padding: 18px 12px;
-                color: #64748b;
-                text-align: center;
-                font-size: 13px;
-            }
-
-            .mobile-ip-item {
-                padding: 10px 12px 9px;
-                border-bottom: 1px solid #eef2f7;
-                background: #fff;
-            }
-
-            .mobile-ip-item:last-child {
-                border-bottom: 0;
-            }
-
-            .mobile-ip-main {
-                display: grid;
-                grid-template-columns: minmax(136px, 1fr) auto auto auto 24px;
-                gap: 5px;
-                align-items: center;
-                min-width: 0;
-            }
-
-            .mobile-ip-address {
-                min-width: 0;
-                color: #0f172a;
-                font-family: "SF Mono", Menlo, Consolas, monospace;
-                font-size: 13px;
-                font-weight: 800;
-                line-height: 24px;
-                white-space: nowrap;
-                overflow: visible;
-                letter-spacing: -0.04em;
-            }
-
-            .mobile-chip {
-                display: inline-flex;
-                align-items: center;
-                justify-content: center;
-                height: 22px;
-                min-width: 34px;
-                padding: 0 7px;
-                border-radius: 999px;
-                font-size: 11px;
-                font-weight: 800;
-                line-height: 1;
-                white-space: nowrap;
-            }
-
-            .mobile-chip.latency {
-                color: #1d4ed8;
-                background: #dbeafe;
-            }
-
-            .mobile-chip.status.ok {
-                color: #166534;
-                background: #dcfce7;
-            }
-
-            .mobile-chip.status.bad {
-                color: #991b1b;
-                background: #fee2e2;
-            }
-
-            .mobile-chip.colo {
-                color: #334155;
-                background: #e2e8f0;
-            }
-
-            .mobile-action {
-                display: inline-flex;
-                justify-content: flex-end;
-                align-items: center;
-                width: 24px;
-                height: 24px;
-                overflow: hidden;
-            }
-
-            .mobile-action a,
-            .mobile-action button {
-                display: inline-flex !important;
-                justify-content: center;
-                align-items: center;
-                width: 24px !important;
-                height: 24px !important;
-                min-height: 24px !important;
-                padding: 0 !important;
-                border: 0 !important;
-                background: transparent !important;
-                color: #dc2626 !important;
-                font-size: 13px !important;
-                text-decoration: none !important;
-            }
-
-            .mobile-ip-sub {
-                margin-top: 5px;
-                padding-left: 10px;
-                border-left: 2px solid #e2e8f0;
-                color: #64748b;
-                font-size: 12px;
-                line-height: 1.45;
-                word-break: break-word;
-                overflow-wrap: anywhere;
-            }
-
-            .ip-info-tag,
-            .latency-badge,
-            .status-badge,
-            .colo-badge {
-                font-size: 11px;
-                padding: 4px 7px;
-                border-radius: 999px;
-            }
-
-            .col-lg-7 > .card.p-4:first-child > .d-flex.justify-content-between.align-items-center.mb-3.flex-wrap.gap-2 {
-                display: grid !important;
-                grid-template-columns: 1fr;
-                gap: 10px !important;
-            }
-
-            .col-lg-7 > .card.p-4:first-child > .d-flex.justify-content-between.align-items-center.mb-3.flex-wrap.gap-2 > .d-flex.gap-1.align-items-center {
-                display: grid !important;
-                grid-template-columns: minmax(0, 1fr) 40px 40px 40px;
-                gap: 8px !important;
-                width: 100%;
-            }
-
-            #pool-selector {
-                width: 100% !important;
-            }
-
-            .col-lg-7 > .card.p-4:first-child > .d-flex.justify-content-between.align-items-center.mb-3.flex-wrap.gap-2 .btn {
-                width: 40px;
-                padding: 0 !important;
-            }
-
-            .ip-content-area > .d-flex.gap-2.mb-2.align-items-center {
-                display: grid !important;
-                grid-template-columns: repeat(3, minmax(0, 1fr));
-                gap: 8px !important;
-            }
-
-            .ip-content-area > .d-flex.gap-2.mb-2.align-items-center > #remote-url {
-                grid-column: 1 / -1;
-            }
-
-            #ip-input {
-                min-height: 130px !important;
-                font-size: 12px !important;
-                line-height: 1.5;
-            }
-
-            .filter-line {
-                display: grid !important;
-                grid-template-columns: minmax(0, 1fr) 40px;
-                gap: 8px !important;
-            }
-
-            .filter-line .btn {
-                width: 100%;
-            }
-
-            .filter-line .btn:nth-of-type(2),
-            .filter-line .btn:nth-of-type(3),
-            .filter-line .btn:nth-of-type(4) {
-                margin-top: 8px;
-            }
-
-            #main-actions {
-                display: grid !important;
-                grid-template-columns: repeat(2, minmax(0, 1fr));
-                gap: 8px !important;
-            }
-
-            #main-actions .btn:last-child {
-                grid-column: 1 / -1;
-            }
-
-            .table-responsive {
-                overflow-x: auto;
-            }
-        }
-
-        @media (max-width: 390px) {
-            .mobile-ip-main {
-                grid-template-columns: minmax(120px, 1fr) auto auto auto 22px;
-                gap: 4px;
-            }
-
-            .mobile-ip-address {
-                font-size: 12px;
-            }
-
-            .mobile-chip {
-                min-width: 30px;
-                padding: 0 5px;
-                font-size: 10px;
-            }
-        }
-
     </style>
 </head>
 <body class="pb-5">
@@ -3634,15 +3254,15 @@ function renderHTML(C, runtimeState = {}) {
             <h6 class="m-0 fw-bold">📡 解析实况</h6>
             <div class="d-flex gap-2 align-items-center flex-grow-1" style="max-width:500px">
                 <input type="text" id="lookup-domain" class="form-control form-control-sm" placeholder="探测: 域名 / IP:端口 / txt@域名" style="border-radius:8px">
-                <button class="btn btn-info btn-sm text-white" onclick="lookupDomain()" title="探测任意域名或IP" style="white-space:nowrap">查询</button>
-                <button class="btn btn-primary btn-sm" onclick="refreshStatus()" title="刷新当前域名解析">刷新</button>
+                <button class="btn btn-info btn-sm text-white" onclick="lookupDomain()" title="探测任意域名或IP" style="white-space:nowrap">🔎</button>
+                <button class="btn btn-primary btn-sm" onclick="refreshStatus()" title="刷新当前域名解析">🔄</button>
             </div>
         </div>
         
         <div id="manual-add-section" class="mb-2">
             <div class="input-group input-group-sm">
                 <input type="text" id="manual-add-ip" class="form-control" placeholder="手动添加IP到当前域名 (如: 1.2.3.4:443)">
-                <button class="btn btn-success" onclick="manualAddIP()" title="添加IP到当前域名">添加</button>
+                <button class="btn btn-success" onclick="manualAddIP()" title="添加IP到当前域名">➕</button>
             </div>
         </div>
         
@@ -3653,17 +3273,16 @@ function renderHTML(C, runtimeState = {}) {
                     <thead style="position:sticky;top:0;background:#fff;z-index:1">
                         <tr>
                             <th>目标地址</th>
+                            <th>Colo</th>
                             <th>延迟</th>
                             <th>状态</th>
                             <th>出口IP / 线路</th>
-                            <th>Colo</th>
                             <th>操作</th>
                         </tr>
                     </thead>
                     <tbody id="status-table"></tbody>
                 </table>
             </div>
-            <div id="status-mobile-list" class="status-mobile-list" aria-live="polite"></div>
             <div id="txt-status"></div>
         </div>
     </div>
@@ -3675,11 +3294,12 @@ function renderHTML(C, runtimeState = {}) {
                 <!-- 池选择器和操作 -->
                 <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
                     <h6 class="m-0 fw-bold">📦 IP库管理</h6>
-                    <div class="d-flex gap-1 align-items-center">
-                        <select id="pool-selector" class="form-select form-select-sm" style="width:120px;border-radius:8px" onchange="switchPool()">
+                    <div class="pool-tools">
+                        <select id="pool-selector" class="form-select form-select-sm" onchange="switchPool()">
                             <option value="pool">通用池</option>
                         </select>
                         <button class="btn btn-sm" onclick="createNewPool()" title="新建池" style="padding:6px 8px">➕</button>
+                        <button class="btn btn-sm" onclick="renameCurrentPool()" title="重命名池" style="padding:6px 8px">✏️</button>
                         <button class="btn btn-sm" onclick="deleteCurrentPool()" title="删除池" style="padding:6px 8px">🗑️</button>
                         <button class="btn btn-sm" onclick="oneClickClean()" title="一键洗库" style="padding:6px 8px">🧹</button>
                     </div>
@@ -3696,7 +3316,7 @@ function renderHTML(C, runtimeState = {}) {
                     </div>
                     
                     <!-- 输入区 -->
-                    <textarea id="ip-input" class="form-control mb-2" rows="6" placeholder="支持格式：&#10;1.2.3.4:443&#10;1.2.3.4 (默认443端口)&#10;example.com:8443 (自动解析域名)&#10;1.2.3.4:443 #HK 香港节点 (带注释)" style="border-radius:12px;font-family:'SF Mono',monospace;font-size:12px"></textarea>
+                    <textarea id="ip-input" class="form-control mb-2" rows="6" placeholder="支持格式：&#10;1.2.3.4:443&#10;1.2.3.4 (默认443端口)&#10;example.com:8443 (检测时解析为IP)&#10;1.2.3.4:443 #HK 香港节点 (带注释)" style="border-radius:12px;font-family:'SF Mono',monospace;font-size:12px"></textarea>
                     
                     <!-- 筛选工具 -->
                     <div class="mb-2 filter-toolbar">
@@ -3779,7 +3399,12 @@ function renderHTML(C, runtimeState = {}) {
         <div class="card p-4 mb-3">
             <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
                 <h6 class="m-0 fw-bold">⚙️ 配置中心</h6>
-                <button id="btn-save-config" class="btn btn-sm btn-success config-save-btn" onclick="saveAppConfig()" style="display:none">💾 保存改动</button>
+                <div class="config-toolbar">
+                    <span id="config-lock-hint" class="config-lock-hint">查看模式</span>
+                    <button id="btn-edit-config" class="btn btn-sm btn-outline-primary" onclick="setConfigEditMode(true)">编辑配置</button>
+                    <button id="btn-cancel-config" class="btn btn-sm btn-outline-secondary" onclick="cancelConfigEdit()" style="display:none">取消</button>
+                    <button id="btn-save-config" class="btn btn-sm btn-success config-save-btn" onclick="saveAppConfig()" style="display:none">💾 保存改动</button>
+                </div>
             </div>
             <div class="switch-row mb-3">
                 <label class="switch">
@@ -3806,7 +3431,7 @@ function renderHTML(C, runtimeState = {}) {
         <div class="card p-4 mb-3">
             <div class="d-flex justify-content-between align-items-center mb-3">
                 <h6 class="m-0 fw-bold">🌐 维护的域名配置</h6>
-                <button class="btn btn-sm btn-outline-primary" onclick="addZoneConfigRow()">➕ 添加权限配置</button>
+                <button class="btn btn-sm btn-outline-primary config-add-action" onclick="addZoneConfigRow()">➕ 添加权限配置</button>
             </div>
             <div id="zone-config-list" class="config-card-grid"></div>
             <div id="zone-edit-panel" class="config-edit-panel"></div>
@@ -3815,7 +3440,7 @@ function renderHTML(C, runtimeState = {}) {
         <div class="card p-4 mb-3">
             <div class="d-flex justify-content-between align-items-center mb-3">
                 <h6 class="m-0 fw-bold">🧭 管理域名</h6>
-                <button class="btn btn-sm btn-outline-primary" onclick="addTargetConfigRow()">➕ 添加管理域名</button>
+                <button class="btn btn-sm btn-outline-primary config-add-action" onclick="addTargetConfigRow()">➕ 添加管理域名</button>
             </div>
             <div id="target-config-list" class="config-card-grid"></div>
             <div id="target-edit-panel" class="config-edit-panel"></div>
@@ -3825,6 +3450,7 @@ function renderHTML(C, runtimeState = {}) {
 <div id="toast" class="toast" role="status" aria-live="polite"></div>
 
 <script>
+    // ===== Client state =====
     const TARGETS = ${targetsJson};
     const SETTINGS = ${settingsJson};
     const INITIAL_APP_CONFIG = ${appConfigJson};
@@ -3835,14 +3461,17 @@ function renderHTML(C, runtimeState = {}) {
     let abortController = null;
     let domainPoolMapping = {};
     let availablePools = ['pool'];
+    let poolDisplayNames = {};
     let toastTimer = null;
     let configDraft = null;
     let configDirty = false;
+    let configEditMode = false;
     
     // 检测中断状态
     let pausedCheckState = null; // { uncheckedLines: [], validIPs: [], total: number }
     
     
+    // ===== Modal / small UI helpers =====
     // 自定义模态对话框
     function showCheckInterruptModal(stats) {
         return new Promise((resolve) => {
@@ -3878,37 +3507,9 @@ function renderHTML(C, runtimeState = {}) {
     
     // 池名显示（统一格式）
     const POOL_NAMES = { pool: '通用池', pool_trash: '🗑️ 垃圾桶', domain_pool_mapping: '系统数据' };
-    function getPoolName(key) { return POOL_NAMES[key] || key.replace('pool_', '') + '池'; }
+    function getPoolName(key) { return poolDisplayNames[key] || POOL_NAMES[key] || key.replace('pool_', '') + '池'; }
     
-    function getAuthTokenFromUrlOrStorage() {
-        const urlKey = new URLSearchParams(location.search).get('key');
-        if (urlKey && urlKey.trim()) {
-            try { localStorage.setItem('ddns_auth_key', urlKey.trim()); } catch {}
-            return urlKey.trim();
-        }
-        try {
-            const stored = localStorage.getItem('ddns_auth_key');
-            return stored ? stored.trim() : '';
-        } catch {
-            return '';
-        }
-    }
-    
-    function ensureAuthToken() {
-        if (!AUTH_ENABLED) return '';
-        let token = getAuthTokenFromUrlOrStorage();
-        if (!token) {
-            token = prompt('请输入 AUTH_KEY（已开启访问保护）');
-            if (token && token.trim()) {
-                token = token.trim();
-                try { localStorage.setItem('ddns_auth_key', token); } catch {}
-            } else {
-                token = '';
-            }
-        }
-        return token;
-    }
-
+    // ===== Form / toast / navigation helpers =====
     function setInputValue(id, value) {
         const el = document.getElementById(id);
         if (el) el.value = value || '';
@@ -3948,6 +3549,42 @@ function renderHTML(C, runtimeState = {}) {
         document.querySelectorAll('.nav-tab').forEach(el => el.classList.toggle('active', el.dataset.page === page));
     }
 
+    function setConfigEditMode(enabled) {
+        configEditMode = !!enabled;
+        const page = document.getElementById('page-config');
+        if (page) {
+            page.classList.toggle('config-locked', !configEditMode);
+            page.querySelectorAll('input:not([type="hidden"]), select, textarea').forEach(el => {
+                if (!el.readOnly) el.disabled = !configEditMode;
+            });
+            page.querySelectorAll('.config-edit-action, .config-add-action').forEach(el => {
+                el.disabled = !configEditMode;
+            });
+        }
+        const hint = document.getElementById('config-lock-hint');
+        if (hint) hint.textContent = configEditMode ? '编辑模式' : '查看模式';
+        const editBtn = document.getElementById('btn-edit-config');
+        const cancelBtn = document.getElementById('btn-cancel-config');
+        const saveBtn = document.getElementById('btn-save-config');
+        if (editBtn) editBtn.style.display = configEditMode ? 'none' : 'inline-block';
+        if (cancelBtn) cancelBtn.style.display = configEditMode ? 'inline-block' : 'none';
+        if (saveBtn) saveBtn.style.display = configEditMode && configDirty ? 'inline-block' : 'none';
+        closeConfigEditor('zone');
+        closeConfigEditor('target');
+    }
+
+    function ensureConfigEditable() {
+        if (configEditMode) return true;
+        showToast('请先点击“编辑配置”', 'error');
+        return false;
+    }
+
+    function cancelConfigEdit() {
+        loadAppConfigToForm(INITIAL_APP_CONFIG);
+        setConfigEditMode(false);
+        showToast('已退出编辑模式');
+    }
+
     function bindConfigGlobalChangeHandlers() {
         ['cfg-scheduled-enabled', 'cfg-tg-enabled', 'cfg-check-api', 'cfg-check-api-backup', 'cfg-doh-api', 'cfg-auth-key', 'cfg-tg-token', 'cfg-tg-id'].forEach(id => {
             const el = document.getElementById(id);
@@ -3963,6 +3600,7 @@ function renderHTML(C, runtimeState = {}) {
     }
 
     function markConfigDirty(message) {
+        if (!configEditMode) return;
         configDirty = true;
         const btn = document.getElementById('btn-save-config');
         if (btn) btn.style.display = 'inline-block';
@@ -3975,6 +3613,7 @@ function renderHTML(C, runtimeState = {}) {
         if (btn) btn.style.display = 'none';
     }
 
+    // ===== Config center =====
     function normalizeDraftZone(zone = {}, index = 0) {
         return {
             name: '配置' + (index + 1),
@@ -4026,14 +3665,15 @@ function renderHTML(C, runtimeState = {}) {
                 <div class="meta"><span>\${escapeHTML(zone.name || ('配置' + (index + 1)))}</span><span>\${escapeHTML(zone.baseDomain || '未设置根域')}</span></div>
                 <div class="meta"><span>Zone: \${escapeHTML(zone.zoneId ? '已填写' : '未填写')}</span><span>CF Key: \${escapeHTML(zone.apiKey ? '已填写' : '未填写')}</span></div>
                 <div class="actions" onclick="event.stopPropagation()">
-                    <button class="btn btn-outline-primary btn-sm" onclick="editZoneConfig(\${index})">编辑</button>
-                    <button class="btn btn-outline-danger btn-sm" onclick="deleteZoneConfig(\${index})">删除</button>
+                    <button class="btn btn-outline-primary btn-sm config-edit-action" onclick="editZoneConfig(\${index})">编辑</button>
+                    <button class="btn btn-outline-danger btn-sm config-edit-action" onclick="deleteZoneConfig(\${index})">删除</button>
                 </div>
             </div>
         \`;
     }
 
     function addZoneConfigRow() {
+        if (!ensureConfigEditable()) return;
         const zones = getDraftZones();
         showZoneEditor(zones.length, { label: '配置' + (zones.length + 1), baseDomain: '', zoneId: '', apiKey: '' });
     }
@@ -4051,6 +3691,7 @@ function renderHTML(C, runtimeState = {}) {
     }
 
     function editZoneConfig(index) {
+        if (!ensureConfigEditable()) return;
         showZoneEditor(index, getDraftZones()[index] || {});
     }
 
@@ -4077,6 +3718,7 @@ function renderHTML(C, runtimeState = {}) {
     }
 
     function commitZoneEditor(index) {
+        if (!ensureConfigEditable()) return;
         const zones = getDraftZones();
         zones[index] = normalizeDraftZone({
             label: getInputValue('edit-zone-label'),
@@ -4091,6 +3733,7 @@ function renderHTML(C, runtimeState = {}) {
     }
 
     function deleteZoneConfig(index) {
+        if (!ensureConfigEditable()) return;
         const zones = getDraftZones();
         if (!confirm('确认删除这个权限配置？相关管理域名会改到配置1。')) return;
         zones.splice(index, 1);
@@ -4137,14 +3780,15 @@ function renderHTML(C, runtimeState = {}) {
                         <input type="checkbox" \${enabled ? 'checked' : ''} onchange="toggleTargetEnabled(\${index}, this.checked)">
                         <span class="switch-slider"></span>
                     </label>
-                    <button class="btn btn-outline-primary btn-sm" onclick="editTargetConfig(\${index})">编辑</button>
-                    <button class="btn btn-outline-danger btn-sm" onclick="deleteTargetConfig(\${index})">删除</button>
+                    <button class="btn btn-outline-primary btn-sm config-edit-action" onclick="editTargetConfig(\${index})">编辑</button>
+                    <button class="btn btn-outline-danger btn-sm config-edit-action" onclick="deleteTargetConfig(\${index})">删除</button>
                 </div>
             </div>
         \`;
     }
 
     function addTargetConfigRow() {
+        if (!ensureConfigEditable()) return;
         showTargetEditor((configDraft?.targets || []).length, { mode: 'A', zoneIndex: 0, prefix: '', port: '443', minActive: 3 });
     }
 
@@ -4163,6 +3807,7 @@ function renderHTML(C, runtimeState = {}) {
         renderConfigCards();
         bindConfigGlobalChangeHandlers();
         clearConfigDirty();
+        setConfigEditMode(configEditMode);
     }
 
     function collectTargetConfigRows() {
@@ -4173,6 +3818,7 @@ function renderHTML(C, runtimeState = {}) {
     }
 
     function editTargetConfig(index) {
+        if (!ensureConfigEditable()) return;
         showTargetEditor(index, (configDraft?.targets || [])[index] || {});
     }
 
@@ -4188,7 +3834,6 @@ function renderHTML(C, runtimeState = {}) {
             <div class="config-edit-grid">
                 <label class="field"><span>权限配置</span><small>选择配置1/2/3。</small><select id="edit-target-zone" class="form-select form-select-sm" onchange="updateTargetEditorPreview()">\${getZoneOptionsHtml(target.zoneIndex ?? 0)}</select></label>
                 <label class="field"><span>维护类型</span><small>A/AAAA 或 TXT。</small><select id="edit-target-mode" class="form-select form-select-sm" onchange="updateTargetEditorPreview()">\${modeOptions}</select></label>
-                <label class="field"><span>维护开关</span><small>关闭后跳过这个域名。</small><select id="edit-target-enabled" class="form-select form-select-sm"><option value="true" \${target.enabled !== false ? 'selected' : ''}>开启</option><option value="false" \${target.enabled === false ? 'selected' : ''}>关闭</option></select></label>
                 <label class="field"><span>出口类型</span><small>由检测 API 实时判断。</small><select id="edit-target-exit" class="form-select form-select-sm"><option value="any" \${exit === 'any' ? 'selected' : ''}>任意</option><option value="v4" \${exit === 'v4' ? 'selected' : ''}>IPv4</option><option value="v6" \${exit === 'v6' ? 'selected' : ''}>IPv6</option><option value="dual" \${exit === 'dual' ? 'selected' : ''}>IPv4 & IPv6</option></select></label>
                 <label class="field"><span>域名前缀</span><small>留空表示根域。</small><input id="edit-target-prefix" class="form-control form-control-sm" value="\${escapeHTML(target.prefix || '')}" placeholder="kr" oninput="updateTargetEditorPreview()"></label>
                 <label class="field"><span>端口</span><small>A/AAAA 模式显示。</small><input id="edit-target-port" class="form-control form-control-sm" value="\${escapeHTML(target.port || '443')}" placeholder="443"></label>
@@ -4197,6 +3842,7 @@ function renderHTML(C, runtimeState = {}) {
                 <label class="field"><span>ASN</span><small>可选，例如 AS4766。</small><input id="edit-target-asn" class="form-control form-control-sm" value="\${escapeHTML(target.asn || '')}" placeholder="AS4766"></label>
                 <label class="field"><span>完整域名</span><small>自动生成，点击可复制。</small><code id="edit-target-preview" class="copyable" onclick="copyText(this.textContent, '域名')"></code></label>
             </div>
+            <input type="hidden" id="edit-target-enabled" value="\${target.enabled !== false ? 'true' : 'false'}">
             <div class="config-edit-actions">
                 <button class="btn btn-outline-secondary btn-sm" onclick="closeConfigEditor('target')">取消</button>
                 <button class="btn btn-primary btn-sm" onclick="commitTargetEditor(\${index})">保存到页面</button>
@@ -4234,6 +3880,7 @@ function renderHTML(C, runtimeState = {}) {
     }
 
     function commitTargetEditor(index) {
+        if (!ensureConfigEditable()) return;
         const target = getTargetEditorValue();
         if (!target.domain || target.domain === '未生成域名') {
             showToast('请先填写权限配置和域名前缀', 'error');
@@ -4247,6 +3894,7 @@ function renderHTML(C, runtimeState = {}) {
     }
 
     function deleteTargetConfig(index) {
+        if (!ensureConfigEditable()) return;
         if (!confirm('确认删除这个管理域名？')) return;
         if (!configDraft.targets) configDraft.targets = [];
         configDraft.targets.splice(index, 1);
@@ -4256,6 +3904,10 @@ function renderHTML(C, runtimeState = {}) {
     }
 
     function toggleTargetEnabled(index, enabled) {
+        if (!ensureConfigEditable()) {
+            renderConfigCards();
+            return;
+        }
         if (!configDraft.targets || !configDraft.targets[index]) return;
         configDraft.targets[index].enabled = enabled;
         renderConfigCards();
@@ -4263,6 +3915,7 @@ function renderHTML(C, runtimeState = {}) {
     }
 
     async function saveAppConfig() {
+        if (!ensureConfigEditable()) return;
         const scheduledToggle = document.getElementById('cfg-scheduled-enabled');
         const tgToggle = document.getElementById('cfg-tg-enabled');
         const config = {
@@ -4294,6 +3947,7 @@ function renderHTML(C, runtimeState = {}) {
             }
             configDraft = cloneConfig(config);
             clearConfigDirty();
+            setConfigEditMode(false);
             log('✅ 配置已保存到 KV，刷新页面后生效', 'success');
             showToast('配置已保存到 KV');
         } catch (e) {
@@ -4316,15 +3970,11 @@ function renderHTML(C, runtimeState = {}) {
         if (opts.body && !(opts.body instanceof FormData) && !headers.has('Content-Type')) {
             headers.set('Content-Type', 'application/json');
         }
-        if (AUTH_ENABLED) {
-            const token = ensureAuthToken();
-            if (token) headers.set('Authorization', 'Bearer ' + token);
-        }
         opts.headers = headers;
         
         const resp = await fetch(path, opts);
         if (resp.status === 401 && AUTH_ENABLED) {
-            try { localStorage.removeItem('ddns_auth_key'); } catch {}
+            location.href = '/';
         }
         return resp;
     }
@@ -4335,12 +3985,7 @@ function renderHTML(C, runtimeState = {}) {
     }
 
     function escapeJSString(str) {
-        const slash = String.fromCharCode(92);
-        return String(str || '')
-            .split(slash).join(slash + slash)
-            .split("'").join(slash + "'")
-            .split(String.fromCharCode(10)).join(slash + 'n')
-            .split(String.fromCharCode(13)).join('');
+        return JSON.stringify(String(str || '')).slice(1, -1).replace(/'/g, "\\'");
     }
 
     const log = (m, t='info', skipTimestamp=false) => {
@@ -4359,6 +4004,7 @@ function renderHTML(C, runtimeState = {}) {
         w.scrollTop = w.scrollHeight;
     };
     
+    // ===== IP formatting / status table =====
     function normalizeIPFormat(input) {
         if (!input) return null;
         
@@ -4427,10 +4073,10 @@ function renderHTML(C, runtimeState = {}) {
 
         let html = '';
         if (ipInfo.country) {
-            html += \`<span class="ip-info-tag">\${escapeHTML(ipInfo.country)}</span>\`;
+            html += \`<span class="ip-info-tag" title="\${escapeHTML(ipInfo.country)}">\${escapeHTML(ipInfo.country)}</span>\`;
         }
         if (ipInfo.asn) {
-            html += \`<span class="ip-info-tag">\${escapeHTML(formatAsn(ipInfo.asn))}</span>\`;
+            html += \`<span class="ip-info-tag" title="\${escapeHTML(formatAsn(ipInfo.asn))}">\${escapeHTML(formatAsn(ipInfo.asn))}</span>\`;
         }
         return html;
     }
@@ -4448,10 +4094,12 @@ function renderHTML(C, runtimeState = {}) {
             return (order[String(a.stack || '').toLowerCase()] ?? 9) - (order[String(b.stack || '').toLowerCase()] ?? 9);
         });
         return ordered.map(exit => {
+            const stackValue = String(exit.stack || '').toLowerCase();
             const stack = exit.stack ? exit.stack.toUpperCase() : 'EXIT';
             const location = [exit.country, exit.city].filter(Boolean).join(' · ');
             const network = [formatAsn(exit.asn), exit.asOrganization].filter(Boolean).join(' · ');
-            return \`<div class="exit-detail">
+            const dualClass = ['dual', 'v4/v6', 'dual-stack'].includes(stackValue) ? ' is-dual' : '';
+            return \`<div class="exit-detail\${dualClass}">
                 <span class="ip-info-tag exit-stack">\${escapeHTML(stack)}</span>
                 <span class="exit-ip copyable" onclick="copyText('\${escapeJSString(exit.ip || '')}', '出口IP')" title="点击复制出口IP">\${escapeHTML(exit.ip || '-')}</span>
                 <span class="ip-info-tag exit-field" title="\${escapeHTML(location || '-') }">\${escapeHTML(location || '-')}</span>
@@ -4516,88 +4164,24 @@ function renderHTML(C, runtimeState = {}) {
     function renderIPRow(r, actionHTML) {
         const infoHtml = formatExitInfo(r.exits) || (r.ipInfo ? formatIPInfo(r.ipInfo) : '-');
         return \`<tr>
-            <td class="fw-bold copyable" onclick="copyText('\${escapeJSString(r.ip)}', '维护地址')" title="点击复制">\${escapeHTML(r.ip)}</td>
+            <td><span class="pill-badge address-pill copyable" onclick="copyText('\${escapeJSString(r.ip)}', '维护地址')" title="点击复制">\${escapeHTML(r.ip)}</span></td>
+            <td><span class="colo-badge" title="Cloudflare 机房 / colo">\${escapeHTML(r.colo || 'N/A')}</span></td>
             <td><span class="latency-badge" title="来自后端检测 API 返回的 responseTime，不是浏览器到节点的延迟">\${escapeHTML(formatLatencyValue(r.time))}</span></td>
             <td><span class="status-badge \${r.success?'ok':'bad'}">\${r.success?'可用':'失败'}</span></td>
             <td class="exit-list-cell">\${infoHtml}</td>
-            <td><span class="colo-badge" title="Cloudflare 机房 / colo">\${escapeHTML(r.colo || 'N/A')}</span></td>
             <td>\${actionHTML}</td>
         </tr>\`;
     }
 
-
-    function syncStatusMobileList() {
-        const table = document.getElementById('status-table');
-        const mobile = document.getElementById('status-mobile-list');
-        if (!table || !mobile) return;
-
-        const rows = Array.from(table.querySelectorAll('tr'));
-        if (rows.length === 0) {
-            mobile.innerHTML = '';
+    function switchDomain() {
+        if (!TARGETS.length) {
+            const manualSection = document.getElementById('manual-add-section');
+            const t = document.getElementById('status-table');
+            if (manualSection) manualSection.style.display = 'none';
+            if (t) t.innerHTML = '<tr><td colspan="6" class="text-secondary p-4">请先到配置中心添加管理域名</td></tr>';
+            log('请先在配置中心添加管理域名', 'warn');
             return;
         }
-
-        mobile.innerHTML = rows.map(row => {
-            const cells = Array.from(row.children);
-            if (cells.length < 6) {
-                return '<div class="mobile-ip-message">' + escapeHTML(row.textContent.trim() || '暂无记录') + '</div>';
-            }
-
-            const ip = cells[0].textContent.trim();
-            const latency = cells[1].textContent.trim();
-            const status = cells[2].textContent.trim();
-            const exitText = summarizeExitCell(cells[3]);
-            const colo = cells[4].textContent.trim();
-            const actionHTML = cells[5].innerHTML || '';
-
-            const statusClass = status === '可用' ? 'ok' : 'bad';
-
-            return '<div class="mobile-ip-item">'
-                + '<div class="mobile-ip-main">'
-                + '<div class="mobile-ip-address" title="' + escapeHTML(ip) + '">' + escapeHTML(ip) + '</div>'
-                + '<span class="mobile-chip latency">' + escapeHTML(latency || '-') + '</span>'
-                + '<span class="mobile-chip status ' + statusClass + '">' + escapeHTML(status || '-') + '</span>'
-                + '<span class="mobile-chip colo">' + escapeHTML(colo || '-') + '</span>'
-                + '<span class="mobile-action">' + actionHTML + '</span>'
-                + '</div>'
-                + '<div class="mobile-ip-sub">' + escapeHTML(exitText || '-') + '</div>'
-                + '</div>';
-        }).join('');
-    }
-
-    function summarizeExitCell(cell) {
-        if (!cell) return '';
-        const details = Array.from(cell.querySelectorAll('.exit-detail'));
-        if (details.length > 0) {
-            return details.map(detail => {
-                const stack = getNodeText(detail.querySelector('.exit-stack'));
-                const ip = getNodeText(detail.querySelector('.exit-ip'));
-                const fields = Array.from(detail.querySelectorAll('.exit-field')).map(getNodeText).filter(Boolean);
-                return [stack, ip].concat(fields).filter(Boolean).join(' · ');
-            }).filter(Boolean).join(' / ');
-        }
-        return cell.textContent.trim();
-    }
-
-    function getNodeText(node) {
-        return node ? String(node.textContent || '').trim() : '';
-    }
-
-    function initStatusMobileList() {
-        const table = document.getElementById('status-table');
-        if (!table) return;
-        const observer = new MutationObserver(syncStatusMobileList);
-        observer.observe(table, { childList: true });
-        syncStatusMobileList();
-    }
-
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', initStatusMobileList);
-    } else {
-        initStatusMobileList();
-    }
-
-    function switchDomain() {
         currentTargetIndex = parseInt(document.getElementById('domain-select').value);
         const target = TARGETS[currentTargetIndex];
         log(\`切换到: \${target.domain} (\${target.mode})\`);
@@ -4608,6 +4192,7 @@ function renderHTML(C, runtimeState = {}) {
         refreshStatus();
     }
     
+    // ===== Pool editor actions =====
     async function loadRemoteUrl() {
         const url = document.getElementById('remote-url').value.trim();
         if (!url) {
@@ -4983,10 +4568,16 @@ function renderHTML(C, runtimeState = {}) {
         }
     }
     
+    // ===== Domain status / lookup / maintenance actions =====
     async function refreshStatus() {
         const t = document.getElementById('status-table');
         const txtDiv = document.getElementById('txt-status');
             const colspan = '6';
+        if (!TARGETS.length) {
+            t.innerHTML = \`<tr><td colspan="\${colspan}" class="text-secondary p-4">请先到配置中心添加管理域名</td></tr>\`;
+            txtDiv.innerHTML = '';
+            return;
+        }
         t.innerHTML = \`<tr><td colspan="\${colspan}" class="text-secondary p-4">🔄 查询中...</td></tr>\`;
         txtDiv.innerHTML = '';
         
@@ -5034,6 +4625,10 @@ function renderHTML(C, runtimeState = {}) {
     }
     
     async function manualAddIP() {
+        if (!TARGETS.length) {
+            log('❌ 请先添加管理域名', 'error');
+            return;
+        }
         const input = document.getElementById('manual-add-ip');
         const ip = input.value.trim();
         
@@ -5237,11 +4832,13 @@ function renderHTML(C, runtimeState = {}) {
         }
     }
     
+    // ===== Pool mapping / trash / filtering =====
     async function loadDomainPoolMapping() {
         try {
             const r = await apiFetch('/api/get-domain-pool-mapping').then(r => r.json());
             domainPoolMapping = r.mapping || {};
             availablePools = r.pools || ['pool'];
+            poolDisplayNames = r.poolNames || {};
             
             updatePoolSelector();
             updateDomainBindingTable();
@@ -5261,7 +4858,7 @@ function renderHTML(C, runtimeState = {}) {
         }
         
         availablePools.forEach(p => {
-            if (p !== 'pool' && p !== 'pool_trash' && p !== 'domain_pool_mapping') {
+            if (p !== 'pool' && p !== 'pool_trash' && p !== 'domain_pool_mapping' && p !== 'pool_display_names') {
                 pools.push(p);
             }
         });
@@ -5277,12 +4874,16 @@ function renderHTML(C, runtimeState = {}) {
     function updateDomainBindingTable() {
         const tbody = document.getElementById('domain-binding-list');
         const domains = TARGETS.map(t => t.domain);
+        if (domains.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="2" class="text-center text-secondary">请先到配置中心添加管理域名</td></tr>';
+            return;
+        }
         
         tbody.innerHTML = domains.map(domain => {
             const boundPool = domainPoolMapping[domain] || 'pool';
             
             const selectablePools = availablePools.filter(p => 
-                p !== 'pool_trash' && p !== 'domain_pool_mapping'
+                p !== 'pool_trash' && p !== 'domain_pool_mapping' && p !== 'pool_display_names'
             );
             
             const options = selectablePools.map(pool => {
@@ -5329,20 +4930,62 @@ function renderHTML(C, runtimeState = {}) {
         try {
             const r = await apiFetch('/api/create-pool', {
                 method: 'POST',
-                body: JSON.stringify({ poolKey })
+                body: JSON.stringify({ name })
             }).then(r => r.json());
             
             if (r.success) {
-                availablePools.push(poolKey);
-                currentPool = poolKey;
+                const createdPoolKey = r.poolKey || poolKey;
+                if (!availablePools.includes(createdPoolKey)) availablePools.push(createdPoolKey);
+                currentPool = createdPoolKey;
                 updatePoolSelector();
                 updateDomainBindingTable();
-                log(\`✅ 已创建池: \${poolKey}\`, 'success');
+                log(\`✅ 已创建池: \${getPoolName(createdPoolKey)}\`, 'success');
             } else {
                 alert(r.error || '创建失败');
             }
         } catch (e) {
             log('❌ 创建池失败', 'error');
+        }
+    }
+
+    async function renameCurrentPool() {
+        if (currentPool === 'pool_trash' || currentPool === 'domain_pool_mapping') {
+            alert(\`不能重命名\${getPoolName(currentPool)}!\`);
+            return;
+        }
+
+        const oldName = getPoolName(currentPool);
+        const name = prompt('输入新的池显示名称', oldName);
+        if (!name) return;
+        const displayName = name.trim();
+
+        if (!/^[\u4e00-\u9fa5a-zA-Z0-9_\\-\\s]+$/.test(displayName)) {
+            alert('显示名称只能包含中文、字母、数字、空格、下划线、横杠!');
+            return;
+        }
+        if (displayName.length > 40) {
+            alert('显示名称不能超过40个字符!');
+            return;
+        }
+
+        try {
+            const r = await apiFetch('/api/rename-pool', {
+                method: 'POST',
+                body: JSON.stringify({ poolKey: currentPool, displayName })
+            }).then(r => r.json());
+
+            if (!r.success) {
+                log(\`❌ 重命名失败: \${r.error || '未知错误'}\`, 'error');
+                return;
+            }
+
+            poolDisplayNames = r.poolNames || { ...poolDisplayNames, [currentPool]: displayName };
+            updatePoolSelector();
+            updateDomainBindingTable();
+            log(\`✅ 已重命名为: \${displayName}\`, 'success');
+            showToast('池名称已更新');
+        } catch (e) {
+            log('❌ 重命名失败', 'error');
         }
     }
     
@@ -5739,6 +5382,7 @@ function renderHTML(C, runtimeState = {}) {
         log('🚀 系统就绪', 'success');
         log(\`⚙️ 配置: 并发\${SETTINGS.CONCURRENT_CHECKS} | 超时\${SETTINGS.CHECK_TIMEOUT}ms\`, 'info');
         loadAppConfigToForm(INITIAL_APP_CONFIG);
+        setConfigEditMode(false);
         ['ip-input', 'universal-filter'].forEach(id => {
             const el = document.getElementById(id);
             if (el) el.addEventListener('input', updateFilterPreview);
