@@ -507,7 +507,7 @@ async function loadFromRemoteUrl(url, allowedCountries = [], allowedPorts = []) 
         const map = new Map();
         const startIndex = hasHeader ? 1 : 0;
 
-                for (let i = startIndex; i < lines.length; i++) {
+        for (let i = startIndex; i < lines.length; i++) {
             // 清理可能导致正则匹配失败的不可见字符 (BOM头、零宽字符等)
             let line = lines[i].replace(/[\u200B-\u200D\uFEFF\r]/g, '').trim();
             let ipStr = '', portStr = '', countryStr = '';
@@ -518,14 +518,13 @@ async function loadFromRemoteUrl(url, allowedCountries = [], allowedPorts = []) 
                 portStr = portIdx >= 0 ? parts[portIdx] : '';
                 countryStr = countryIdx >= 0 ? parts[countryIdx] : '';
             } else {
-                // 专门兼容纯 IPv4
+                // 专门兼容纯 IPv4 和 纯 IPv6
                 const pureIpv4Match = line.match(/^(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
-                // 专门兼容纯 IPv6 (确保包含冒号)
                 const pureIpv6Match = line.match(/^([0-9a-fA-F:]+)$/);
 
                 if (pureIpv4Match) {
                     ipStr = pureIpv4Match[1];
-                    // 核心修复：如果前端填了端口，就用填的第一个端口；没填才默认443
+                    // 如果前端填了端口，就用填的第一个端口；没填才默认443
                     portStr = allowedPorts.length > 0 ? allowedPorts[0] : '443';
                     countryStr = '';
                 } else if (pureIpv6Match && line.includes(':')) {
@@ -545,12 +544,37 @@ async function loadFromRemoteUrl(url, allowedCountries = [], allowedPorts = []) 
                 }
             }
 
+            if (!ipStr) continue;
+
+            ipStr = ipStr.replace(/^"|"$/g, '').trim();
+            portStr = portStr.replace(/^"|"$/g, '').trim();
+            countryStr = countryStr.replace(/^"|"$/g, '').trim();
+
+            let addr = ipStr;
+            if (portStr) {
+                addr = ipStr.includes(':') && !ipStr.startsWith('[') && !ipStr.includes(']') ? `[${ipStr}]:${portStr}` : `${ipStr}:${portStr}`;
+            } else {
+                const parts = parseAddrParts(ipStr);
+                portStr = parts.port || '443';
+                addr = parts.host.includes(':') && !parts.host.startsWith('[') ? `[${parts.host}]:${portStr}` : `${parts.host}:${portStr}`;
+            }
+
+            if (allowedPorts.length > 0 && !allowedPorts.includes(portStr)) continue;
+            if (allowedCountries.length > 0 && countryStr) {
+                if (!allowedCountries.includes(countryStr.toUpperCase())) continue;
+            }
+
+            const finalLine = `${addr},null,${countryStr || 'null'}`;
+            const key = extractIPKey(finalLine);
+            map.set(key, finalLine);
+        }
         return Array.from(map.values()).join('\n');
     } catch (e) {
         console.error(`❌ 远程加载失败 ${url}:`, e);
     }
     return '';
 }
+
 
 async function handleCurrentStatus(url, config) {
     const targetIndex = parseInt(url.searchParams.get('target') || '0');
