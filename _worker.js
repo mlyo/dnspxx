@@ -3658,14 +3658,14 @@ function renderHTML(C, runtimeState = {}) {
     }
     
     // ===== Pool editor actions =====
-        async function loadRemoteUrl() {
+         async function loadRemoteUrl() {
         const url = document.getElementById('remote-url').value.trim();
         const countries = document.getElementById('remote-country').value.trim();
         const ports = document.getElementById('remote-port').value.trim();
         
         if (!url) { log('❌ 请输入URL', 'error'); return; }
         
-        log(`🌐 极速拉取并执行边缘过滤...`, 'warn');
+        log('🌐 极速拉取并执行边缘过滤...', 'warn');
         try {
             const r = await apiFetch('/api/load-remote-url', {
                 method: 'POST', body: JSON.stringify({ url, countries, ports })
@@ -3674,17 +3674,16 @@ function renderHTML(C, runtimeState = {}) {
             if (r.success) {
                 document.getElementById('ip-input').value = r.ips || '';
                 updateFilterPreview();
-                log(`✅ 拉取成功: 解析并提纯出 ${r.count} 个符合条件的节点`, 'success');
-            } else { log(`❌ 拉取失败: ${r.error}`, 'error'); }
-        } catch (e) { log(`❌ 网络请求出错`, 'error'); }
+                log('✅ 拉取成功: 解析并提纯出 ' + r.count + ' 个符合条件的节点', 'success');
+            } else { log('❌ 拉取失败: ' + r.error, 'error'); }
+        } catch (e) { log('❌ 网络请求出错', 'error'); }
     }
 
-    // 这里是新增的函数，直接粘贴在 loadRemoteUrl 下面
     async function saveByCountry() {
         const content = document.getElementById('ip-input').value;
         const lines = content.split('\n').filter(l => l.trim());
         if (lines.length === 0) { log('❌ 内容为空，请先极速拉取或手动输入数据', 'error'); return; }
-        if (!confirm(`将根据节点的国家自动并发分发到不同的专属 IP 池中，确认执行？`)) return;
+        if (!confirm('将根据节点的国家自动并发分发到不同的专属 IP 池中，确认执行？')) return;
 
         log('🗂️ 正在执行全自动按国家分发入库...', 'warn');
         
@@ -3695,13 +3694,13 @@ function renderHTML(C, runtimeState = {}) {
             country = country.replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
             if (!country) country = 'UNKNOWN';
             
-            const poolKey = `pool_${country}`;
+            const poolKey = 'pool_' + country;
             if (!groups[poolKey]) groups[poolKey] = [];
             groups[poolKey].push(line);
         });
 
         const poolKeys = Object.keys(groups);
-        log(`📊 共识别出 ${poolKeys.length} 个地区: ${poolKeys.map(k => k.replace('pool_', '')).join(', ')}`, 'info');
+        log('📊 共识别出 ' + poolKeys.length + ' 个地区: ' + poolKeys.map(k => k.replace('pool_', '')).join(', '), 'info');
 
         try {
             let totalAdded = 0;
@@ -3712,18 +3711,19 @@ function renderHTML(C, runtimeState = {}) {
                 
                 if (r.success) {
                     totalAdded += r.added || 0;
-                    log(`  ✅ [${poolKey.replace('pool_', '')}池] 入库 ${ipLines.length} 个 (新增 ${r.added})`, 'success');
-                } else { log(`  ❌ [${poolKey.replace('pool_', '')}池] 入库失败: ${r.error}`, 'error'); }
+                    log('  ✅ [' + poolKey.replace('pool_', '') + '池] 入库 ' + ipLines.length + ' 个 (新增 ' + r.added + ')', 'success');
+                } else { log('  ❌ [' + poolKey.replace('pool_', '') + '池] 入库失败: ' + r.error, 'error'); }
             });
 
             await Promise.all(promises);
 
-            log(`🎉 智能分发入库完成！总计新增 ${totalAdded} 个 IP。`, 'success');
+            log('🎉 智能分发入库完成！总计新增 ' + totalAdded + ' 个 IP。', 'success');
             document.getElementById('ip-input').value = '';
             updateFilterPreview();
             await loadDomainPoolMapping(); 
-        } catch (e) { log(`❌ 分发入库遇到错误: ${e.message}`, 'error'); }
+        } catch (e) { log('❌ 分发入库遇到错误: ' + e.message, 'error'); }
     }
+
 
     
     async function loadCurrentPool() {
