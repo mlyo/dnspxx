@@ -2102,4 +2102,3 @@ function renderHTML(C, runtimeState = {}) {
 </html>`;
     return html.replace(/^[ \t]+/gm, '').replace(/\n{2,}/g, '\n');
 }
-}
