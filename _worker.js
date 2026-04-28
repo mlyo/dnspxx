@@ -508,32 +508,40 @@ async function loadFromRemoteUrl(url, allowedCountries = [], allowedPorts = []) 
         const startIndex = hasHeader ? 1 : 0;
 
         for (let i = startIndex; i < lines.length; i++) {
-            // 清理可能导致正则匹配失败的不可见字符 (BOM头、零宽字符等)
-            let line = lines[i].replace(/[\u200B-\u200D\uFEFF\r]/g, '').trim();
+            // 1. 清理隐形干扰字符
+            let rawLine = lines[i].replace(/[\u200B-\u200D\uFEFF\r]/g, '').trim();
+            if (!rawLine) continue;
+
             let ipStr = '', portStr = '', countryStr = '';
+            let comment = '';
+
+            // 2. 提前剥离并保存注释
+            let mainPart = rawLine;
+            const commentIdx = rawLine.indexOf('#');
+            if (commentIdx >= 0) {
+                mainPart = rawLine.substring(0, commentIdx).trim();
+                comment = rawLine.substring(commentIdx).trim();
+            }
 
             if (hasHeader) {
-                const parts = line.split(',');
+                const parts = mainPart.split(',');
                 ipStr = ipIdx >= 0 ? parts[ipIdx] : '';
                 portStr = portIdx >= 0 ? parts[portIdx] : '';
                 countryStr = countryIdx >= 0 ? parts[countryIdx] : '';
             } else {
-                // 专门兼容纯 IPv4 和 纯 IPv6
-                const pureIpv4Match = line.match(/^(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
-                const pureIpv6Match = line.match(/^([0-9a-fA-F:]+)$/);
+                // 3. 对剥离了注释的“纯净部分”进行匹配
+                const pureIpv4Match = mainPart.match(/^(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
+                const pureIpv6Match = mainPart.match(/^([0-9a-fA-F:]+)$/);
 
                 if (pureIpv4Match) {
                     ipStr = pureIpv4Match[1];
-                    // 如果前端填了端口，就用填的第一个端口；没填才默认443
                     portStr = allowedPorts.length > 0 ? allowedPorts[0] : '443';
-                    countryStr = '';
-                } else if (pureIpv6Match && line.includes(':')) {
+                } else if (pureIpv6Match && mainPart.includes(':')) {
                     ipStr = `[${pureIpv6Match[1]}]`;
                     portStr = allowedPorts.length > 0 ? allowedPorts[0] : '443';
-                    countryStr = '';
                 } else {
-                    // 原有的带端口或带国家/ASN等复杂格式解析
-                    const parsed = parseIPLine(line);
+                    // 原有老逻辑（兜底）
+                    const parsed = parseIPLine(rawLine);
                     if (parsed) {
                         const meta = parsePoolLine(parsed);
                         const parts = parseAddrParts(meta.address);
@@ -543,6 +551,39 @@ async function loadFromRemoteUrl(url, allowedCountries = [], allowedPorts = []) 
                     }
                 }
             }
+
+            if (!ipStr) continue;
+
+            ipStr = ipStr.replace(/^"|"$/g, '').trim();
+            portStr = portStr.replace(/^"|"$/g, '').trim();
+            countryStr = countryStr.replace(/^"|"$/g, '').trim();
+
+            // 🌟 4. 智能彩蛋：尝试从注释里提取国家代码 (比如从 #DE德国 提取出 DE)
+            if (!countryStr && comment) {
+                const countryMatch = comment.match(/#([a-zA-Z]{2})(?![a-zA-Z])/);
+                if (countryMatch) countryStr = countryMatch[1].toUpperCase();
+            }
+
+            let addr = ipStr;
+            if (portStr) {
+                addr = ipStr.includes(':') && !ipStr.startsWith('[') && !ipStr.includes(']') ? `[${ipStr}]:${portStr}` : `${ipStr}:${portStr}`;
+            } else {
+                const parts = parseAddrParts(ipStr);
+                portStr = parts.port || '443';
+                addr = parts.host.includes(':') && !parts.host.startsWith('[') ? `[${parts.host}]:${portStr}` : `${parts.host}:${portStr}`;
+            }
+
+            if (allowedPorts.length > 0 && !allowedPorts.includes(portStr)) continue;
+            if (allowedCountries.length > 0 && countryStr) {
+                if (!allowedCountries.includes(countryStr.toUpperCase())) continue;
+            }
+
+            // 5. 重新把注释拼回去，合成项目的标准数据格式
+            const finalLine = `${addr},null,${countryStr || 'null'} ${comment}`.trim();
+            const key = extractIPKey(finalLine);
+            map.set(key, finalLine);
+        }
+
 
             if (!ipStr) continue;
 
