@@ -3658,7 +3658,7 @@ function renderHTML(C, runtimeState = {}) {
     }
     
     // ===== Pool editor actions =====
-         async function loadRemoteUrl() {
+            async function loadRemoteUrl() {
         const url = document.getElementById('remote-url').value.trim();
         const countries = document.getElementById('remote-country').value.trim();
         const ports = document.getElementById('remote-port').value.trim();
@@ -3681,7 +3681,8 @@ function renderHTML(C, runtimeState = {}) {
 
     async function saveByCountry() {
         const content = document.getElementById('ip-input').value;
-        const lines = content.split('\n').filter(l => l.trim());
+        // 修复：必须使用双斜杠转义 \\n
+        const lines = content.split('\\n').filter(l => l.trim());
         if (lines.length === 0) { log('❌ 内容为空，请先极速拉取或手动输入数据', 'error'); return; }
         if (!confirm('将根据节点的国家自动并发分发到不同的专属 IP 池中，确认执行？')) return;
 
@@ -3690,7 +3691,8 @@ function renderHTML(C, runtimeState = {}) {
         const groups = {};
         lines.forEach(line => {
             const parsed = parsePoolLine(line);
-            let country = parsed.country && parsed.country !== 'null' ? parsed.country.split(/[\/,\s]+/)[0] : 'UNKNOWN';
+            // 修复：必须使用双斜杠转义正则的 \\s 和 \\/
+            let country = parsed.country && parsed.country !== 'null' ? parsed.country.split(/[\\/,\\s]+/)[0] : 'UNKNOWN';
             country = country.replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
             if (!country) country = 'UNKNOWN';
             
@@ -3706,7 +3708,8 @@ function renderHTML(C, runtimeState = {}) {
             let totalAdded = 0;
             const promises = Object.entries(groups).map(async ([poolKey, ipLines]) => {
                 const r = await apiFetch('/api/save-pool', {
-                    method: 'POST', body: JSON.stringify({ pool: ipLines.join('\n'), poolKey: poolKey, mode: 'append' })
+                    // 修复：必须使用双斜杠转义 \\n
+                    method: 'POST', body: JSON.stringify({ pool: ipLines.join('\\n'), poolKey: poolKey, mode: 'append' })
                 }).then(r => r.json());
                 
                 if (r.success) {
@@ -3723,6 +3726,7 @@ function renderHTML(C, runtimeState = {}) {
             await loadDomainPoolMapping(); 
         } catch (e) { log('❌ 分发入库遇到错误: ' + e.message, 'error'); }
     }
+
 
 
     
