@@ -2,6 +2,29 @@
  * DDNS Pro & Proxy IP Manager
  */
 
+const GLOBAL_SETTINGS = {
+    // ── IP 检测 ──
+    CONCURRENT_CHECKS: 32,       // 前端批量检测并发数（参考检测页实现）
+    CHECK_TIMEOUT: 3000,         // 单次 ProxyIP 检测超时(ms)
+
+    // ── 网络超时 ──
+    REMOTE_LOAD_TIMEOUT: 5000,   // 远程 URL 加载超时(ms)
+    DOH_TIMEOUT: 5000,           // DNS over HTTPS 查询超时(ms)
+
+    // ── 数据限制 ──
+    DEFAULT_MIN_ACTIVE: 3,       // 默认最小活跃 IP 数
+    MAX_TRASH_SIZE: 1000,        // 垃圾桶最大条目数
+};
+
+const SETTING_LIMITS = {
+    CONCURRENT_CHECKS: { min: 1, max: 128 },
+    CHECK_TIMEOUT: { min: 500, max: 30000 },
+    REMOTE_LOAD_TIMEOUT: { min: 1000, max: 60000 },
+    DOH_TIMEOUT: { min: 1000, max: 30000 },
+    DEFAULT_MIN_ACTIVE: { min: 0, max: 100 },
+    MAX_TRASH_SIZE: { min: 0, max: 100000 }
+};
+
 // ==================== 默认配置（环境变量未设置时使用） ====================
 const DEFAULT_CONFIG = {
     // 目标维护域名的Cloudflare 配置
@@ -26,29 +49,30 @@ const DEFAULT_CONFIG = {
     authKey: '',             // AUTH_KEY: 面板访问密钥
     scheduledEnabled: true,   // SCHEDULED_ENABLED: 定时维护开关
     tgEnabled: true,          // TG_ENABLED: Telegram 通知开关
+    settings: GLOBAL_SETTINGS,
     
     // 运行时配置（非环境变量）
     projectUrl: ''           // 项目URL（自动获取）
 };
 // ==================== 默认配置结束 ====================
 
-const GLOBAL_SETTINGS = {
-    // ── IP 检测 ──
-    CONCURRENT_CHECKS: 32,       // 前端批量检测并发数（参考检测页实现）
-    CHECK_TIMEOUT: 3000,         // 单次 ProxyIP 检测超时(ms)
+function normalizeRuntimeSettings(raw = {}) {
+    const settings = { ...GLOBAL_SETTINGS };
+    for (const [key, defaults] of Object.entries(SETTING_LIMITS)) {
+        const fallback = GLOBAL_SETTINGS[key];
+        const parsed = parseInt(raw?.[key] ?? fallback, 10);
+        const value = Number.isFinite(parsed) ? parsed : fallback;
+        settings[key] = Math.min(defaults.max, Math.max(defaults.min, value));
+    }
+    return settings;
+}
 
-    // ── 网络超时 ──
-    REMOTE_LOAD_TIMEOUT: 5000,   // 远程 URL 加载超时(ms)
-    DOH_TIMEOUT: 5000,           // DNS over HTTPS 查询超时(ms)
-
-    // ── 数据限制 ──
-    DEFAULT_MIN_ACTIVE: 3,       // 默认最小活跃 IP 数
-    MAX_TRASH_SIZE: 1000,        // 垃圾桶最大条目数
-    MAX_POOL_NAME_LENGTH: 50,    // IP池名称最大长度
-};
+function getRuntimeSettings(config = {}) {
+    return normalizeRuntimeSettings(config.settings || GLOBAL_SETTINGS);
+}
 
 const APP_CONFIG_KEY = 'app_config';
-const APP_VERSION = '2026.04.27-13.41';
+const APP_VERSION = '2026.05.03-23.40';
 
 function safeJSONParse(str, defaultValue = null) {
     try { return str ? JSON.parse(str) : defaultValue; }
@@ -134,8 +158,7 @@ function parsePoolEntry(line) {
     return {
         address,
         asn: fields[1] || null,
-        country: fields[2] || null,
-        stack: normalizeStackFilter(fields[3] || null)
+        country: fields[2] || null
     };
 }
 
@@ -148,27 +171,76 @@ function normalizeStackFilter(value) {
     return text.replace('-', '_');
 }
 
-const POOL_DISPLAY_NAMES = { pool: '通用池', pool_trash: '🗑️ 垃圾桶', domain_pool_mapping: '系统数据' };
-const getPoolDisplayName = poolKey => POOL_DISPLAY_NAMES[poolKey] || poolKey.replace('pool_', '') + '池';
-const DELETABLE_PROTECTED_POOL_KEYS = new Set(['pool', 'pool_trash', 'domain_pool_mapping', 'pool_display_names']);
-const SYSTEM_POOL_KEYS = new Set(['pool_trash', 'domain_pool_mapping', 'pool_display_names']);
-const isPoolDataKey = key => key === 'pool' || key === 'pool_trash' || /^pool_[\u4e00-\u9fa5a-zA-Z0-9_-]+$/.test(key || '');
-const isUserPoolKey = key => key === 'pool' || /^pool_[\u4e00-\u9fa5a-zA-Z0-9_-]+$/.test(key || '');
-const isWritablePoolKey = key => isUserPoolKey(key) || key === 'pool_trash';
+const POOL_DEFAULT_KEY = 'ip_pool_default';
+const POOL_TRASH_KEY = 'ip_pool_trash';
+const POOL_NAMES_KEY = 'ip_pool_names';
+const DOMAIN_POOL_MAPPING_KEY = 'domain_pool_mapping';
+const NUMBERED_POOL_KEY_RE = /^ip_pool_(\d{3})$/;
+function getPoolFixedName(poolKey) {
+    if (poolKey === POOL_DEFAULT_KEY) return '默认池';
+    if (poolKey === POOL_TRASH_KEY) return '🗑️ 垃圾桶';
+    const numbered = NUMBERED_POOL_KEY_RE.exec(poolKey || '');
+    if (numbered) return `池 ${numbered[1]}`;
+    return String(poolKey || '');
+}
+function getPoolDisplayName(poolKey, poolNames = {}) {
+    return poolNames?.[poolKey] || getPoolFixedName(poolKey);
+}
+const formatPoolNumber = value => String(value).padStart(3, '0');
+const getNumberedPoolKey = value => `ip_pool_${formatPoolNumber(value)}`;
+const isUserPoolKey = key => key === POOL_DEFAULT_KEY || NUMBERED_POOL_KEY_RE.test(key || '');
+const isPoolDataKey = key => isUserPoolKey(key) || key === POOL_TRASH_KEY;
+const isWritablePoolKey = key => isUserPoolKey(key) || key === POOL_TRASH_KEY;
+
+function comparePoolKeys(a, b) {
+    const order = key => key === POOL_DEFAULT_KEY ? 0 : (key === POOL_TRASH_KEY ? 1 : 2);
+    const oa = order(a);
+    const ob = order(b);
+    if (oa !== ob) return oa - ob;
+    const na = NUMBERED_POOL_KEY_RE.exec(a || '');
+    const nb = NUMBERED_POOL_KEY_RE.exec(b || '');
+    if (na && nb) return Number(na[1]) - Number(nb[1]);
+    if (na) return -1;
+    if (nb) return 1;
+    return String(a || '').localeCompare(String(b || ''), 'zh-CN', { numeric: true });
+}
 
 async function readPoolDisplayNames(env) {
-    return safeJSONParse(await env.IP_DATA.get('pool_display_names'), {});
+    const names = safeJSONParse(await env.IP_DATA.get(POOL_NAMES_KEY), {});
+    return names && typeof names === 'object' && !Array.isArray(names) ? names : {};
 }
 
 async function writePoolDisplayNames(env, names) {
-    await env.IP_DATA.put('pool_display_names', JSON.stringify(names || {}));
+    await env.IP_DATA.put(POOL_NAMES_KEY, JSON.stringify(names || {}));
+}
+
+async function readDomainPoolMapping(env) {
+    const mapping = safeJSONParse(await env.IP_DATA.get(DOMAIN_POOL_MAPPING_KEY), {});
+    return mapping && typeof mapping === 'object' && !Array.isArray(mapping) ? mapping : {};
 }
 
 async function listPoolKeys(env) {
+    await ensurePoolDefaults(env);
     const allKeys = await env.IP_DATA.list();
     const pools = allKeys.keys.map(k => k.name).filter(isPoolDataKey);
-    if (!pools.includes('pool')) pools.unshift('pool');
-    return pools;
+    if (!pools.includes(POOL_DEFAULT_KEY)) pools.unshift(POOL_DEFAULT_KEY);
+    if (!pools.includes(POOL_TRASH_KEY)) pools.push(POOL_TRASH_KEY);
+    return [...new Set(pools)].sort(comparePoolKeys);
+}
+
+async function ensurePoolDefaults(env) {
+    if (await env.IP_DATA.get(POOL_DEFAULT_KEY) === null) await env.IP_DATA.put(POOL_DEFAULT_KEY, '');
+    if (await env.IP_DATA.get(POOL_TRASH_KEY) === null) await env.IP_DATA.put(POOL_TRASH_KEY, '');
+}
+
+async function getPoolState(env) {
+    await ensurePoolDefaults(env);
+    const [mapping, pools, poolNames] = await Promise.all([
+        readDomainPoolMapping(env),
+        listPoolKeys(env),
+        readPoolDisplayNames(env)
+    ]);
+    return { mapping, pools, poolNames };
 }
 
 const formatLogMessage = msg => `[${new Date().toLocaleTimeString('zh-CN', { timeZone: 'Asia/Shanghai' })}] ${msg}`;
@@ -278,8 +350,8 @@ export default {
     async fetch(request, env, ctx) {
         const requestStart = Date.now();
         const url = new URL(request.url);
-        const config = await createConfig(env, request);
         const kvReady = hasKVBinding(env);
+        const config = kvReady ? await createConfig(env, request) : createEnvConfig(env, request);
 
         const buildAuthCookie = () => `ddns_auth=${encodeURIComponent((config.authKey || '').trim())}; Path=/; HttpOnly; Secure; SameSite=Lax`;
 
@@ -372,7 +444,7 @@ export default {
 const API_ROUTES = {
     '/api/get-pool': (url, req, env, config) => handleGetPool(url, env),
     '/api/save-pool': (url, req, env, config) => handleSavePool(req, env),
-    '/api/load-remote-url': (url, req, env, config) => handleLoadRemoteUrl(req),
+    '/api/load-remote-url': (url, req, env, config) => handleLoadRemoteUrl(req, config),
     '/api/current-status': (url, req, env, config) => handleCurrentStatus(url, config),
     '/api/lookup-domain': (url, req, env, config) => handleLookupDomain(url, config),
     '/api/check-ip': (url, req, env, config) => handleCheckIP(url, config),
@@ -395,37 +467,60 @@ const API_ROUTES = {
 const POST_ONLY_ROUTES = new Set([
     '/api/save-pool', '/api/load-remote-url', '/api/add-a-record',
     '/api/save-domain-pool-mapping', '/api/create-pool', '/api/clear-trash',
-    '/api/restore-from-trash', '/api/delete-record', '/api/rename-pool',
-    '/api/delete-pool', '/api/maintain', '/api/save-config'
+    '/api/restore-from-trash',
+    '/api/delete-record',
+    '/api/rename-pool',
+    '/api/delete-pool', 
+    '/api/maintain',
+    '/api/save-config'
 ]);
 
 async function handleAPIRequest(url, request, env, config) {
-    if (POST_ONLY_ROUTES.has(url.pathname) && request.method !== 'POST') return new Response('Method Not Allowed', { status: 405 });
+    if (POST_ONLY_ROUTES.has(url.pathname) && request.method !== 'POST') {
+        return new Response('Method Not Allowed', { status: 405 });
+    }
     const handler = API_ROUTES[url.pathname];
     return handler ? await handler(url, request, env, config) : new Response('Not Found', { status: 404 });
 }
 
 async function handleGetPool(url, env) {
-    const poolKey = url.searchParams.get('poolKey') || 'pool';
+    await ensurePoolDefaults(env);
+    const poolKey = url.searchParams.get('poolKey') || POOL_DEFAULT_KEY;
     const onlyCount = url.searchParams.get('onlyCount') === 'true';
-    if (!isWritablePoolKey(poolKey)) return badRequest({ success: false, error: '无效的池名称' });
+    if (!isWritablePoolKey(poolKey)) {
+        return badRequest({ success: false, error: '无效的池名称' });
+    }
+
     const pool = await env.IP_DATA.get(poolKey) || '';
     const count = pool.trim() ? pool.trim().split('\n').length : 0;
-    if (onlyCount) return jsonResponse({ count });
+    
+    if (onlyCount) {
+        return jsonResponse({ count });
+    }
     return jsonResponse({ pool, count });
 }
 
 async function handleSavePool(request, env) {
+    await ensurePoolDefaults(env);
     const body = await readJsonBody(request);
-    if (!body) return badRequest({ success: false, error: '请求体不是有效JSON' });
-    const poolKey = body.poolKey || 'pool';
-    const mode = body.mode || 'append'; 
-    if (!isWritablePoolKey(poolKey)) return badRequest({ success: false, error: '无效的池名称' });
+    if (!body) {
+        return badRequest({ success: false, error: '请求体不是有效JSON' });
+    }
+    const poolKey = body.poolKey || POOL_DEFAULT_KEY;
+    const mode = body.mode || 'append'; // append: 追加, replace: 覆盖, remove: 删除
+    if (!isWritablePoolKey(poolKey)) {
+        return badRequest({ success: false, error: '无效的池名称' });
+    }
     const newIPs = cleanIPList(body.pool || '');
-    if (!newIPs && mode !== 'remove') return badRequest({ success: false, error: '没有有效IP' });
+
+    if (!newIPs && mode !== 'remove') {
+        return badRequest({ success: false, error: '没有有效IP' });
+    }
 
     const existingPool = await env.IP_DATA.get(poolKey) || '';
     const existingMap = new Map();
+
+    // 先加载现有IP
     parsePoolList(existingPool).forEach(line => {
         const key = extractIPKey(line);
         if (key) existingMap.set(key, line);
@@ -435,167 +530,84 @@ async function handleSavePool(request, env) {
     let responseData;
 
     if (mode === 'replace') {
+        // 覆盖模式：清空现有，只保留新IP
         existingMap.clear();
         parsePoolList(newIPs).forEach(line => {
             const key = extractIPKey(line);
             if (key) existingMap.set(key, line);
         });
-        responseData = { success: true, count: existingMap.size, replaced: existingCount, message: `已覆盖，原有 ${existingCount} 个IP，现有 ${existingMap.size} 个IP` };
+
+        responseData = {
+            success: true,
+            count: existingMap.size,
+            replaced: existingCount,
+            message: `已覆盖，原有 ${existingCount} 个IP，现有 ${existingMap.size} 个IP`
+        };
     } else if (mode === 'remove') {
+        // 删除模式：从池中删除指定IP
         const toRemove = new Set();
         parsePoolList(newIPs || body.pool || '').forEach(line => {
             const key = extractIPKey(line);
             if (key) toRemove.add(key);
         });
+
         let removed = 0;
         for (const key of toRemove) {
-            if (existingMap.has(key)) { existingMap.delete(key); removed++; }
+            if (existingMap.has(key)) {
+                existingMap.delete(key);
+                removed++;
+            }
         }
-        responseData = { success: true, count: existingMap.size, removed, message: `已删除 ${removed} 个IP，剩余 ${existingMap.size} 个IP` };
+
+        responseData = {
+            success: true,
+            count: existingMap.size,
+            removed,
+            message: `已删除 ${removed} 个IP，剩余 ${existingMap.size} 个IP`
+        };
     } else {
+        // 追加模式
         parsePoolList(newIPs).forEach(line => {
             const key = extractIPKey(line);
             if (key) existingMap.set(key, line);
         });
-        responseData = { success: true, count: existingMap.size, added: existingMap.size - existingCount };
+
+        responseData = {
+            success: true,
+            count: existingMap.size,
+            added: existingMap.size - existingCount
+        };
     }
 
-    await env.IP_DATA.put(poolKey, Array.from(existingMap.values()).join('\n'));
+    const finalPool = Array.from(existingMap.values()).join('\n');
+    await env.IP_DATA.put(poolKey, finalPool);
+
     return jsonResponse(responseData);
 }
 
-// --- CSV与漏斗拦截核心 ---
-async function handleLoadRemoteUrl(request) {
+async function handleLoadRemoteUrl(request, config) {
     const body = await readJsonBody(request);
-    if (!body || !body.url) return badRequest({ success: false, error: '缺少URL' });
-    const countries = body.countries ? body.countries.split(',').map(c => c.trim().toUpperCase()).filter(Boolean) : [];
-    const ports = body.ports ? body.ports.split(',').map(p => p.trim()).filter(Boolean) : [];
-    const ips = await loadFromRemoteUrl(body.url, countries, ports);
-    return jsonResponse({ success: true, ips, count: ips ? ips.split('\n').length : 0 });
-}
-
-async function loadFromRemoteUrl(url, allowedCountries = [], allowedPorts = []) {
-    try {
-        const parsed = new URL(url);
-        if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return '';
-        const hostname = parsed.hostname.toLowerCase();
-        if (hostname === 'localhost' || hostname.startsWith('127.') || hostname.startsWith('10.') || hostname.startsWith('192.168.') ||
-            /^172\.(1[6-9]|2\d|3[01])\./.test(hostname) || hostname.startsWith('169.254.') || hostname.startsWith('100.64.') ||
-            hostname === 'metadata.google.internal' || hostname === '0.0.0.0' || hostname === '::1' || hostname === '[::1]' ||
-            hostname.startsWith('fc00:') || hostname.startsWith('fe80:') || hostname.startsWith('[fc00:') || hostname.startsWith('[fe80:')) return '';
-    } catch { return ''; }
-
-    try {
-        const r = await fetch(url, { signal: AbortSignal.timeout(GLOBAL_SETTINGS.REMOTE_LOAD_TIMEOUT) });
-        if (!r.ok) return '';
-        const text = await r.text();
-        const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
-        if (!lines.length) return '';
-
-        let hasHeader = false;
-        let ipIdx = -1, portIdx = -1, countryIdx = -1;
-        
-        const firstLine = lines[0].toLowerCase();
-        if (firstLine.includes('ip') && firstLine.includes(',')) {
-            hasHeader = true;
-            const headers = firstLine.split(',');
-            ipIdx = headers.findIndex(h => h === 'ip' || h.includes('ip地址'));
-            portIdx = headers.findIndex(h => h === 'port' || h === '端口');
-            countryIdx = headers.findIndex(h => h === 'country' || h.includes('归属国') || h.includes('国家'));
-        }
-
-        const map = new Map();
-        const startIndex = hasHeader ? 1 : 0;
-
-        for (let i = startIndex; i < lines.length; i++) {
-            // 1. 清理隐形干扰字符
-            let rawLine = lines[i].replace(/[\u200B-\u200D\uFEFF\r]/g, '').trim();
-            if (!rawLine) continue;
-
-            let ipStr = '', portStr = '', countryStr = '';
-            let comment = '';
-
-            // 2. 提前剥离并保存注释
-            let mainPart = rawLine;
-            const commentIdx = rawLine.indexOf('#');
-            if (commentIdx >= 0) {
-                mainPart = rawLine.substring(0, commentIdx).trim();
-                comment = rawLine.substring(commentIdx).trim();
-            }
-
-            if (hasHeader) {
-                const parts = mainPart.split(',');
-                ipStr = ipIdx >= 0 ? parts[ipIdx] : '';
-                portStr = portIdx >= 0 ? parts[portIdx] : '';
-                countryStr = countryIdx >= 0 ? parts[countryIdx] : '';
-            } else {
-                // 3. 对剥离了注释的“纯净部分”进行匹配
-                const pureIpv4Match = mainPart.match(/^(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
-                const pureIpv6Match = mainPart.match(/^([0-9a-fA-F:]+)$/);
-
-                if (pureIpv4Match) {
-                    ipStr = pureIpv4Match[1];
-                    portStr = allowedPorts.length > 0 ? allowedPorts[0] : '443';
-                } else if (pureIpv6Match && mainPart.includes(':')) {
-                    ipStr = `[${pureIpv6Match[1]}]`;
-                    portStr = allowedPorts.length > 0 ? allowedPorts[0] : '443';
-                } else {
-                    // 原有老逻辑（兜底处理复杂格式）
-                    const parsed = parseIPLine(rawLine);
-                    if (parsed) {
-                        const meta = parsePoolLine(parsed);
-                        const parts = parseAddrParts(meta.address);
-                        ipStr = parts.host;
-                        portStr = parts.port;
-                        countryStr = meta.country === 'null' ? '' : meta.country;
-                    }
-                }
-            }
-
-            if (!ipStr) continue;
-
-            ipStr = ipStr.replace(/^"|"$/g, '').trim();
-            portStr = portStr.replace(/^"|"$/g, '').trim();
-            countryStr = countryStr.replace(/^"|"$/g, '').trim();
-
-            // 4. 智能提取注释里的国家代码 (比如从 #DE德国 提取出 DE)
-            if (!countryStr && comment) {
-                const countryMatch = comment.match(/#([a-zA-Z]{2})(?![a-zA-Z])/);
-                if (countryMatch) countryStr = countryMatch[1].toUpperCase();
-            }
-
-            let addr = ipStr;
-            if (portStr) {
-                addr = ipStr.includes(':') && !ipStr.startsWith('[') && !ipStr.includes(']') ? `[${ipStr}]:${portStr}` : `${ipStr}:${portStr}`;
-            } else {
-                const parts = parseAddrParts(ipStr);
-                portStr = parts.port || '443';
-                addr = parts.host.includes(':') && !parts.host.startsWith('[') ? `[${parts.host}]:${portStr}` : `${parts.host}:${portStr}`;
-            }
-
-            if (allowedPorts.length > 0 && !allowedPorts.includes(portStr)) continue;
-            if (allowedCountries.length > 0 && countryStr) {
-                if (!allowedCountries.includes(countryStr.toUpperCase())) continue;
-            }
-
-            // 5. 拼装成系统标准格式入库
-            const finalLine = `${addr},null,${countryStr || 'null'} ${comment}`.trim();
-            const key = extractIPKey(finalLine);
-            map.set(key, finalLine);
-        }
-        return Array.from(map.values()).join('\n');
-    } catch (e) {
-        console.error(`❌ 远程加载失败 ${url}:`, e);
+    if (!body) {
+        return badRequest({ success: false, error: '请求体不是有效JSON' });
     }
-    return '';
+    const url = body.url;
+    if (!url) {
+        return badRequest({ success: false, error: '缺少URL' });
+    }
+    const ips = await loadFromRemoteUrl(url, config);
+    return jsonResponse({ 
+        success: true, 
+        ips,
+        count: ips ? ips.split('\n').length : 0
+    });
 }
-
-
 
 async function handleCurrentStatus(url, config) {
     const targetIndex = parseInt(url.searchParams.get('target') || '0');
     const target = config.targets[targetIndex];
-    if (!target) return badRequest({ error: '无效的目标' });
+    if (!target) {
+        return badRequest({ error: '无效的目标' });
+    }
     const status = await getDomainStatus(target, config);
     return jsonResponse(status);
 }
@@ -603,26 +615,33 @@ async function handleCurrentStatus(url, config) {
 async function handleLookupDomain(url, config) {
     const input = url.searchParams.get('domain');
     if (!input) return badRequest({ error: '缺少domain参数' });
+
     if (input.startsWith('txt@')) {
         const domain = input.substring(4);
         const txtData = await resolveTXTRecord(domain, config);
-        return jsonResponse({ type: 'TXT', domain, ips: txtData.ips, raw: txtData.raw });
+        return jsonResponse({
+            type: 'TXT',
+            domain,
+            ips: txtData.ips,
+            raw: txtData.raw
+        });
     }
+
     const { domain, port } = parseDomainPort(input);
     const records = await resolveDomainRecords(domain, config);
     const ips = records.map(record => record.ip);
-    return jsonResponse({ type: 'ADDRESS', ips, records, port, domain });
+    return jsonResponse({
+        type: 'ADDRESS',
+        ips,
+        records,
+        port,
+        domain
+    });
 }
 
 async function handleCheckIP(url, config) {
     const target = url.searchParams.get('ip');
     if (!target) return badRequest({ error: '缺少ip参数' });
-    const useBackup = url.searchParams.get('useBackup') === 'true';
-    if (useBackup && config.checkApiBackup) {
-        const addr = normalizeCheckAddr(target);
-        const result = await checkProxyIPOnce(addr, config.checkApiBackup);
-        return jsonResponse(result ?? { success: false });
-    }
     const res = await checkProxyIP(target, config);
     return jsonResponse(res);
 }
@@ -638,135 +657,249 @@ async function handleDeleteRecord(url, config) {
     if (isTxt && ip) {
         const record = await fetchCF(cfConfig, `/zones/${cfConfig.zoneId}/dns_records/${id}`);
         if (!record) return badRequest({ success: false, error: '获取记录失败' });
+
         const remaining = parseTXTContent(record.content).filter(item => item !== ip);
-        const ok = remaining.length === 0 ? await deleteDNSRecord(cfConfig, id) : await upsertTXTRecord(cfConfig, record.name, id, remaining);
-        return ok ? jsonResponse({ success: true }) : jsonResponse({ success: false, error: 'CF API 更新失败' });
+        const ok = remaining.length === 0
+            ? await deleteDNSRecord(cfConfig, id)
+            : await upsertTXTRecord(cfConfig, record.name, id, remaining);
+        return ok
+            ? jsonResponse({ success: true })
+            : jsonResponse({ success: false, error: 'CF API 更新失败' });
     }
-    return await deleteDNSRecord(cfConfig, id) ? jsonResponse({ success: true }) : jsonResponse({ success: false, error: 'CF API 删除失败' });
+    
+    return await deleteDNSRecord(cfConfig, id)
+        ? jsonResponse({ success: true })
+        : jsonResponse({ success: false, error: 'CF API 删除失败' });
 }
 
 async function handleAddARecord(request, config) {
     const body = await readJsonBody(request);
-    if (!body) return badRequest({ success: false, error: '请求体不是有效JSON' });
+    if (!body) {
+        return badRequest({ success: false, error: '请求体不是有效JSON' });
+    }
     const ip = body.ip;
     const targetIndex = body.targetIndex || 0;
     const target = config.targets[targetIndex];
     const cfConfig = getTargetCFConfig(config, target);
-    if (!ip || !target) return badRequest({ success: false, error: '参数错误' });
-    const addr = parseAddr(ip, target.port).address;
-    const check = await checkProxyIP(addr, config);
-    if (!check.success) return jsonResponse({ success: false, error: 'IP检测失败' });
 
+    if (!ip || !target) {
+        return badRequest({ success: false, error: '参数错误' });
+    }
+
+    const addr = target.mode === 'TXT' ? normalizeCheckAddr(ip) : parseAddr(ip, target.port).address;
+
+    const check = await checkProxyIP(addr, config);
+    if (!check.success) {
+        return jsonResponse({ success: false, error: 'IP检测失败' });
+    }
+
+    // TXT模式：追加到TXT记录
     if (target.mode === 'TXT') {
         const records = await fetchCF(cfConfig, `/zones/${cfConfig.zoneId}/dns_records?name=${target.domain}&type=TXT`);
-        if (records === null) return jsonResponse({ success: false, error: CF_ERROR_MSG });
+        if (records === null) {
+            return jsonResponse({ success: false, error: CF_ERROR_MSG });
+        }
+
         const record = records?.[0] || null;
         const currentIPs = record ? parseTXTContent(record.content) : [];
-        if (currentIPs.includes(addr)) return jsonResponse({ success: false, error: 'IP已存在于TXT记录' });
+        if (currentIPs.includes(addr)) {
+            return jsonResponse({ success: false, error: 'IP已存在于TXT记录' });
+        }
+
         currentIPs.push(addr);
-        if (!await upsertTXTRecord(cfConfig, target.domain, record?.id, currentIPs)) return jsonResponse({ success: false, error: 'CF API 保存TXT记录失败' });
-        return jsonResponse({ success: true, colo: check.colo, time: check.responseTime, mode: 'TXT' });
+        if (!await upsertTXTRecord(cfConfig, target.domain, record?.id, currentIPs)) {
+            return jsonResponse({ success: false, error: 'CF API 保存TXT记录失败' });
+        }
+
+        return jsonResponse({
+            success: true,
+            colo: check.colo,
+            time: check.responseTime,
+            mode: 'TXT'
+        });
     }
+
+    // 地址记录模式
     const added = await addAddressRecord(cfConfig, target.domain, extractHostFromAddr(addr));
-    return jsonResponse({ success: added.ok, colo: check.colo, time: check.responseTime, mode: added.type });
+
+    return jsonResponse({
+        success: added.ok,
+        colo: check.colo,
+        time: check.responseTime,
+        mode: added.type
+    });
 }
 
 async function handleMaintain(url, env, config) {
     const isManual = url.searchParams.get('manual') === 'true';
     const res = await maintainAllDomains(env, isManual, config);
-    return jsonResponse({ ...res, allLogs: res.reports.flatMap(r => [...(r.logs || []), ...(r.txtLogs || [])]) });
+
+    // 将日志包含在响应中
+    return jsonResponse({
+        ...res,
+        // 确保所有日志都返回给前端
+        allLogs: res.reports.flatMap(r => [
+            ...(r.logs || []),
+            ...(r.txtLogs || [])
+        ])
+    });
 }
 
 async function handleGetDomainPoolMapping(env) {
-    const mappingJson = await env.IP_DATA.get('domain_pool_mapping') || '{}';
-    const mapping = safeJSONParse(mappingJson, {});
-    const poolNames = await readPoolDisplayNames(env);
-    const pools = await listPoolKeys(env);
-    return jsonResponse({ mapping, pools, poolNames });
+    return jsonResponse(await getPoolState(env));
 }
 
 async function handleSaveDomainPoolMapping(request, env) {
+    await ensurePoolDefaults(env);
     const body = await readJsonBody(request);
-    if (!body) return badRequest({ success: false, error: '请求体不是有效JSON' });
+    if (!body) {
+        return badRequest({ success: false, error: '请求体不是有效JSON' });
+    }
     const mapping = body.mapping && typeof body.mapping === 'object' && !Array.isArray(body.mapping)
-        ? Object.fromEntries(Object.entries(body.mapping).filter(([, poolKey]) => isUserPoolKey(poolKey)))
+        ? Object.fromEntries(Object.entries(body.mapping)
+            .filter(([, poolKey]) => isUserPoolKey(poolKey)))
         : {};
-    await env.IP_DATA.put('domain_pool_mapping', JSON.stringify(mapping));
-    return jsonResponse({ success: true });
+    await env.IP_DATA.put(DOMAIN_POOL_MAPPING_KEY, JSON.stringify(mapping));
+    return jsonResponse({ success: true, ...(await getPoolState(env)) });
 }
 
 async function handleCreatePool(request, env) {
+    await ensurePoolDefaults(env);
     const body = await readJsonBody(request);
-    if (!body) return badRequest({ success: false, error: '请求体不是有效JSON' });
-    const rawName = String(body.poolKey || body.name || body.displayName || '').trim();
-    const poolKey = rawName.startsWith('pool_') ? rawName : (rawName ? `pool_${rawName}` : '');
-    if (!poolKey) return badRequest({ success: false, error: '请输入池名称' });
-    if (poolKey.length > GLOBAL_SETTINGS.MAX_POOL_NAME_LENGTH || !/^pool_[\u4e00-\u9fa5a-zA-Z0-9_-]+$/.test(poolKey)) {
-        return badRequest({ success: false, error: `池名称只能包含中文、字母、数字、下划线、横杠，最长${GLOBAL_SETTINGS.MAX_POOL_NAME_LENGTH}字符` });
+    if (!body) {
+        return badRequest({ success: false, error: '请求体不是有效JSON' });
     }
-    if (await env.IP_DATA.get(poolKey) !== null) return badRequest({ success: false, error: '池已存在' });
-    await env.IP_DATA.put(poolKey, '');
-    return jsonResponse({ success: true, poolKey, displayName: rawName.replace(/^pool_/, '') });
-}
+    const displayName = String(body.displayName || '').trim();
+    
+    if (!displayName) {
+        return badRequest({ success: false, error: '请输入池显示名称' });
+    }
 
-function validateEditablePoolKey(poolKey) {
-    if (!poolKey || !poolKey.startsWith('pool_')) return '池名称无效';
-    if (poolKey.length > GLOBAL_SETTINGS.MAX_POOL_NAME_LENGTH || !/^pool_[\u4e00-\u9fa5a-zA-Z0-9_-]+$/.test(poolKey)) return `池名称只能包含中文、字母、数字、下划线、横杠，最长${GLOBAL_SETTINGS.MAX_POOL_NAME_LENGTH}字符`;
-    return '';
+    const pools = await listPoolKeys(env);
+    let nextIndex = 1;
+    for (const key of pools) {
+        const match = NUMBERED_POOL_KEY_RE.exec(key);
+        if (match) nextIndex = Math.max(nextIndex, Number(match[1]) + 1);
+    }
+
+    let poolKey = getNumberedPoolKey(nextIndex);
+    while (await env.IP_DATA.get(poolKey) !== null) {
+        nextIndex++;
+        poolKey = getNumberedPoolKey(nextIndex);
+    }
+
+    await env.IP_DATA.put(poolKey, '');
+    const poolNames = await readPoolDisplayNames(env);
+    poolNames[poolKey] = displayName;
+    await writePoolDisplayNames(env, poolNames);
+    return jsonResponse({ success: true, poolKey, displayName, ...(await getPoolState(env)) });
 }
 
 async function handleRenamePool(request, env) {
+    await ensurePoolDefaults(env);
     const body = await readJsonBody(request);
-    if (!body) return badRequest({ success: false, error: '请求体不是有效JSON' });
-    const poolKey = body.poolKey || 'pool';
+    if (!body) {
+        return badRequest({ success: false, error: '请求体不是有效JSON' });
+    }
+
+    const poolKey = body.poolKey || POOL_DEFAULT_KEY;
     const displayName = String(body.displayName || '').trim();
-    if (SYSTEM_POOL_KEYS.has(poolKey)) return badRequest({ success: false, error: `不能重命名${getPoolDisplayName(poolKey)}` });
-    if (poolKey !== 'pool' && validateEditablePoolKey(poolKey)) return badRequest({ success: false, error: '池名称无效' });
-    if (!displayName) return badRequest({ success: false, error: '显示名称不能为空' });
-    if (displayName.length > 40 || !/^[\u4e00-\u9fa5a-zA-Z0-9_\-\s]+$/.test(displayName)) return badRequest({ success: false, error: '显示名称只能包含中文、字母、数字、空格、下划线、横杠，最长40字符' });
+    if (!isUserPoolKey(poolKey)) {
+        return badRequest({ success: false, error: '池名称无效' });
+    }
+    if (!displayName) {
+        return badRequest({ success: false, error: '显示名称不能为空' });
+    }
+
     const pool = await env.IP_DATA.get(poolKey);
-    if (pool === null && poolKey !== 'pool') return badRequest({ success: false, error: '池不存在' });
+    if (pool === null && poolKey !== POOL_DEFAULT_KEY) {
+        return badRequest({ success: false, error: '池不存在' });
+    }
+
     const poolNames = await readPoolDisplayNames(env);
-    const defaultName = getPoolDisplayName(poolKey);
-    if (displayName === defaultName) delete poolNames[poolKey];
-    else poolNames[poolKey] = displayName;
+    const defaultName = getPoolFixedName(poolKey);
+    if (displayName === defaultName) {
+        delete poolNames[poolKey];
+    } else {
+        poolNames[poolKey] = displayName;
+    }
     await writePoolDisplayNames(env, poolNames);
-    return jsonResponse({ success: true, poolKey, displayName, poolNames });
+    return jsonResponse({ success: true, poolKey, displayName, ...(await getPoolState(env)) });
 }
 
 async function handleDeletePool(url, env) {
-    const poolKey = url.searchParams.get('poolKey');
-    if (!poolKey) return badRequest({ success: false, error: '缺少poolKey参数' });
-    if (DELETABLE_PROTECTED_POOL_KEYS.has(poolKey) || validateEditablePoolKey(poolKey)) return badRequest({ success: false, error: `不能删除${getPoolDisplayName(poolKey)}` });
-    if (await env.IP_DATA.get(poolKey) === null) return badRequest({ success: false, error: '池不存在' });
+    await ensurePoolDefaults(env);
+    const poolKey = url.searchParams.get('poolKey') || '';
+    
+    if (!poolKey) {
+        return badRequest({ success: false, error: '缺少poolKey参数' });
+    }
+    
+    if (poolKey === POOL_DEFAULT_KEY || poolKey === POOL_TRASH_KEY || !isUserPoolKey(poolKey)) {
+        return badRequest({ success: false, error: `不能删除${getPoolFixedName(poolKey)}` });
+    }
+
+    const existing = await env.IP_DATA.get(poolKey);
+    if (existing === null) {
+        return badRequest({ success: false, error: '池不存在' });
+    }
+    
     try {
         await env.IP_DATA.delete(poolKey);
-        return jsonResponse({ success: true });
+        const poolNames = await readPoolDisplayNames(env);
+        delete poolNames[poolKey];
+        await writePoolDisplayNames(env, poolNames);
+        const mapping = await readDomainPoolMapping(env);
+        let mappingChanged = false;
+        for (const [domain, boundPool] of Object.entries(mapping)) {
+            if (boundPool === poolKey) {
+                mapping[domain] = POOL_DEFAULT_KEY;
+                mappingChanged = true;
+            }
+        }
+        if (mappingChanged) await env.IP_DATA.put(DOMAIN_POOL_MAPPING_KEY, JSON.stringify(mapping));
+        return jsonResponse({ success: true, ...(await getPoolState(env)) });
     } catch (e) {
+        console.error('删除池失败:', e);
         return jsonResponse({ success: false, error: '删除池失败' });
     }
 }
 
 async function handleClearTrash(env) {
-    await env.IP_DATA.put('pool_trash', '');
+    await ensurePoolDefaults(env);
+    await env.IP_DATA.put(POOL_TRASH_KEY, '');
     return jsonResponse({ success: true, message: '垃圾桶已清空' });
 }
 
 async function handleRestoreFromTrash(request, env) {
+    await ensurePoolDefaults(env);
     const body = await readJsonBody(request);
-    if (!body) return badRequest({ success: false, error: '请求体不是有效JSON' });
+    if (!body) {
+        return badRequest({ success: false, error: '请求体不是有效JSON' });
+    }
     const ipsToRestore = body.ips || [];
     const restoreToSource = body.restoreToSource === true;
-    const targetPool = body.targetPool || 'pool';
-    if (!Array.isArray(ipsToRestore)) return badRequest({ success: false, error: 'ips 必须是数组' });
-    if (!isUserPoolKey(targetPool)) return badRequest({ success: false, error: '无效的目标池' });
-    if (ipsToRestore.length === 0) return badRequest({ success: false, error: '没有选择IP' });
+    const targetPool = body.targetPool || POOL_DEFAULT_KEY;
+    if (!Array.isArray(ipsToRestore)) {
+        return badRequest({ success: false, error: 'ips 必须是数组' });
+    }
+    if (!isUserPoolKey(targetPool)) {
+        return badRequest({ success: false, error: '无效的目标池' });
+    }
     
-    let trashList = parsePoolList(await env.IP_DATA.get('pool_trash'));
+    if (ipsToRestore.length === 0) {
+        return badRequest({ success: false, error: '没有选择IP' });
+    }
+    
+    // 获取垃圾桶
+    let trashList = parsePoolList(await env.IP_DATA.get(POOL_TRASH_KEY));
+    
     let restored = 0;
     const restoredByPool = {};
-    const poolCache = new Map();
-    
+    const poolNames = await readPoolDisplayNames(env);
+
+    // 读取/写入多个池：按需懒加载
+    const poolCache = new Map(); // poolKey -> { list: string[], set: Set<string> }
     async function loadPool(poolKey) {
         if (poolCache.has(poolKey)) return poolCache.get(poolKey);
         const list = parsePoolList(await env.IP_DATA.get(poolKey));
@@ -776,25 +909,37 @@ async function handleRestoreFromTrash(request, env) {
         return obj;
     }
 
+    // 从垃圾桶条目中提取来源池
     function pickTargetPoolFromTrashEntry(trashEntry) {
         if (!restoreToSource) return targetPool;
+        // trashEntry 格式：`${ipAddr} # ${reason} ${timestamp} 来自 ${poolKey}`
+        // 例如：`1.2.3.4:443 # 洗库失效 2024-01-01T00:00:00.000Z 来自 ip_pool_001`
         const idx = trashEntry.lastIndexOf(' 来自 ');
         if (idx !== -1) {
             const sourcePool = trashEntry.slice(idx + 4).trim();
-            if (isPoolDataKey(sourcePool)) return sourcePool;
+            // 直接返回来源池名（如 ip_pool_001），不需要通过域名映射
+            if (isPoolDataKey(sourcePool)) {
+                return sourcePool;
+            }
         }
-        return 'pool';
+        return POOL_DEFAULT_KEY;
     }
     
+    // 建立垃圾桶索引，避免循环内反复遍历
     const trashMap = new Map();
     trashList.forEach(t => trashMap.set(extractIPKey(t), t));
 
+    // 恢复IP
     for (const ip of ipsToRestore) {
         const trashEntry = trashMap.get(ip);
+
         if (trashEntry) {
             trashMap.delete(ip);
+
             const toPool = pickTargetPoolFromTrashEntry(trashEntry);
             const poolObj = await loadPool(toPool);
+
+            // 添加到目标池（如果不存在）- 只恢复纯净的IP:PORT，不携带垃圾桶注释
             if (!poolObj.set.has(ip)) {
                 poolObj.list.push(ip);
                 poolObj.set.add(ip);
@@ -804,27 +949,71 @@ async function handleRestoreFromTrash(request, env) {
         }
     }
 
-    await env.IP_DATA.put('pool_trash', Array.from(trashMap.values()).join('\n'));
+    // 保存
+    await env.IP_DATA.put(POOL_TRASH_KEY, Array.from(trashMap.values()).join('\n'));
     for (const [poolKey, poolObj] of poolCache.entries()) {
         await env.IP_DATA.put(poolKey, poolObj.list.join('\n'));
     }
-    return jsonResponse({ success: true, restored, restoredByPool, message: restoreToSource ? `已恢复 ${restored} 个IP到源IP库` : `已恢复 ${restored} 个IP到 ${targetPool}` });
+
+    const rawRestoreDisplay = Object.entries(restoredByPool).map(([poolKey, count]) => ({
+        poolKey,
+        name: getPoolDisplayName(poolKey, poolNames),
+        count
+    }));
+    const restoreNameCounts = rawRestoreDisplay.reduce((acc, item) => {
+        acc[item.name] = (acc[item.name] || 0) + 1;
+        return acc;
+    }, {});
+    const restoredByPoolDisplay = rawRestoreDisplay.map(item => ({
+        ...item,
+        label: restoreNameCounts[item.name] > 1 ? `${item.name}（${getPoolFixedName(item.poolKey)}）` : item.name
+    }));
+    const restoreTargetName = getPoolDisplayName(targetPool, poolNames);
+    const restoreSummary = restoredByPoolDisplay
+        .map(item => `${item.label} ${item.count} 个`)
+        .join('，');
+    
+    return jsonResponse({ 
+        success: true, 
+        restored,
+        restoredByPool,
+        restoredByPoolDisplay,
+        message: restoreToSource
+            ? `已恢复 ${restored} 个IP到源IP库${restoreSummary ? `（${restoreSummary}）` : ''}`
+            : `已恢复 ${restored} 个IP到 ${restoreTargetName}`
+    });
 }
 
 function getEditableConfig(config) {
     return {
-        apiKey: config.apiKey || '', zoneId: config.zoneId || '', zones: config.zones || [], targets: config.targets || [],
-        tgToken: config.tgToken || '', tgId: config.tgId || '', tgEnabled: config.tgEnabled !== false,
-        checkApi: config.checkApi || '', checkApiBackup: config.checkApiBackup || '', dohApi: config.dohApi || '',
-        authKey: config.authKey || '', scheduledEnabled: config.scheduledEnabled !== false, settings: { ...GLOBAL_SETTINGS }
+        apiKey: config.apiKey || '',
+        zoneId: config.zoneId || '',
+        zones: config.zones || [],
+        targets: config.targets || [],
+        tgToken: config.tgToken || '',
+        tgId: config.tgId || '',
+        tgEnabled: config.tgEnabled !== false,
+        checkApi: config.checkApi || '',
+        checkApiBackup: config.checkApiBackup || '',
+        dohApi: config.dohApi || '',
+        authKey: config.authKey || '',
+        scheduledEnabled: config.scheduledEnabled !== false,
+        settings: getRuntimeSettings(config)
     };
 }
 
-async function handleGetConfig(config) { return jsonResponse({ success: true, config: getEditableConfig(config) }); }
+// ==================== Config parsing / normalization ====================
+
+async function handleGetConfig(config) {
+    return jsonResponse({ success: true, config: getEditableConfig(config) });
+}
 
 async function handleSaveConfig(request, env) {
     const body = await readJsonBody(request);
-    if (!body || typeof body !== 'object') return badRequest({ success: false, error: '请求体不是有效JSON' });
+    if (!body || typeof body !== 'object') {
+        return badRequest({ success: false, error: '请求体不是有效JSON' });
+    }
+
     const rawConfig = body.config && typeof body.config === 'object' ? body.config : body;
     const normalized = normalizeSavedConfig(rawConfig);
     await env.IP_DATA.put(APP_CONFIG_KEY, JSON.stringify(normalized));
@@ -842,7 +1031,10 @@ function parseDomainPort(input, defaultPort = '443') {
     }
     const parts = input.split(':');
     if (parts.length > 2) return { domain: input, port: defaultPort };
-    return { domain: parts[0], port: parts[1] || defaultPort };
+    return {
+        domain: parts[0],
+        port: parts[1] || defaultPort
+    };
 }
 
 function parseBooleanConfig(value, defaultValue = true) {
@@ -854,7 +1046,12 @@ function parseBooleanConfig(value, defaultValue = true) {
     return defaultValue;
 }
 
-function normalizeTargetMode(value) { return String(value || 'A').trim().toUpperCase() === 'TXT' ? 'TXT' : 'A'; }
+function normalizeTargetMode(value) {
+    const text = String(value || 'A').trim().toUpperCase();
+    if (text === 'TXT') return 'TXT';
+    return 'A';
+}
+
 function normalizeExitFilter(value) {
     const text = String(value || '').trim().toLowerCase().replace(/_/g, '-');
     if (!text || ['any', 'all', 'v4/v6', 'v6/v4'].includes(text)) return 'any';
@@ -864,20 +1061,35 @@ function normalizeExitFilter(value) {
     return 'any';
 }
 
-function normalizeTargetConfig(target) {
+
+function normalizeTargetConfig(target, settings = GLOBAL_SETTINGS) {
     if (!target || typeof target !== 'object') return null;
     const baseDomain = String(target.baseDomain || '').trim();
     const prefix = String(target.prefix || '').trim().replace(/^\.+|\.+$/g, '');
     const domain = String(target.domain || buildManagedDomain(prefix, baseDomain)).trim();
     if (!domain) return null;
+    const mode = normalizeTargetMode(target.mode);
+    const port = mode === 'TXT' ? 'any' : (String(target.port || '443').trim() || '443');
+    const normalizedSettings = normalizeRuntimeSettings(settings);
+    const parsedMinActive = parseInt(target.minActive ?? normalizedSettings.DEFAULT_MIN_ACTIVE, 10);
+    const minActive = Math.max(0, Number.isFinite(parsedMinActive) ? parsedMinActive : normalizedSettings.DEFAULT_MIN_ACTIVE);
+    const exitFilter = normalizeExitFilter(target.exitFilter);
+    const country = String(target.country || '').trim().toUpperCase();
+    const asn = normalizeAsnValue(target.asn);
     const zoneIndex = Number.isInteger(target.zoneIndex) ? target.zoneIndex : (target.zoneIndex === '' || target.zoneIndex === undefined ? null : parseInt(target.zoneIndex, 10));
+    const enabled = target.enabled !== false;
     return {
-        mode: normalizeTargetMode(target.mode), domain, baseDomain, prefix,
+        mode,
+        domain,
+        baseDomain,
+        prefix,
         zoneIndex: Number.isInteger(zoneIndex) && zoneIndex >= 0 ? zoneIndex : null,
-        port: String(target.port || '443').trim() || '443',
-        minActive: Math.max(0, parseInt(target.minActive ?? GLOBAL_SETTINGS.DEFAULT_MIN_ACTIVE, 10) || GLOBAL_SETTINGS.DEFAULT_MIN_ACTIVE),
-        exitFilter: normalizeExitFilter(target.exitFilter), country: String(target.country || '').trim().toUpperCase(),
-        asn: normalizeAsnValue(target.asn), enabled: target.enabled !== false
+        port,
+        minActive,
+        exitFilter,
+        country,
+        asn,
+        enabled
     };
 }
 
@@ -887,6 +1099,9 @@ function buildManagedDomain(prefix, baseDomain) {
     if (!cleanBase) return '';
     return cleanPrefix ? `${cleanPrefix}.${cleanBase}` : cleanBase;
 }
+
+
+
 
 function normalizeZoneConfig(zone) {
     if (!zone || typeof zone !== 'object') return null;
@@ -898,16 +1113,30 @@ function normalizeZoneConfig(zone) {
     return { name, baseDomain, zoneId, apiKey, label: String(zone.label || baseDomain || name || zoneId || '未命名').trim() };
 }
 
+
+
 function normalizeSavedConfig(rawConfig = {}) {
+    const settings = normalizeRuntimeSettings(rawConfig.settings || rawConfig);
+    const zones = Array.isArray(rawConfig.zones)
+        ? rawConfig.zones.map(normalizeZoneConfig).filter(Boolean)
+        : [];
+    const targets = Array.isArray(rawConfig.targets)
+        ? rawConfig.targets.map(target => normalizeTargetConfig(target, settings)).filter(Boolean)
+        : [];
     return {
-        apiKey: String(rawConfig.apiKey || '').trim(), zoneId: String(rawConfig.zoneId || '').trim(),
-        zones: Array.isArray(rawConfig.zones) ? rawConfig.zones.map(normalizeZoneConfig).filter(Boolean) : [],
-        targets: Array.isArray(rawConfig.targets) ? rawConfig.targets.map(normalizeTargetConfig).filter(Boolean) : [],
-        tgToken: String(rawConfig.tgToken || '').trim(), tgId: String(rawConfig.tgId || '').trim(),
+        apiKey: String(rawConfig.apiKey || '').trim(),
+        zoneId: String(rawConfig.zoneId || '').trim(),
+        zones,
+        targets,
+        tgToken: String(rawConfig.tgToken || '').trim(),
+        tgId: String(rawConfig.tgId || '').trim(),
         tgEnabled: parseBooleanConfig(rawConfig.tgEnabled, true),
-        checkApi: String(rawConfig.checkApi || '').trim(), checkApiBackup: String(rawConfig.checkApiBackup || '').trim(),
-        dohApi: String(rawConfig.dohApi || '').trim(), authKey: String(rawConfig.authKey || '').trim(),
-        scheduledEnabled: parseBooleanConfig(rawConfig.scheduledEnabled, true)
+        checkApi: String(rawConfig.checkApi || '').trim(),
+        checkApiBackup: String(rawConfig.checkApiBackup || '').trim(),
+        dohApi: String(rawConfig.dohApi || '').trim(),
+        authKey: String(rawConfig.authKey || '').trim(),
+        scheduledEnabled: parseBooleanConfig(rawConfig.scheduledEnabled, true),
+        settings
     };
 }
 
@@ -916,15 +1145,21 @@ async function loadSavedConfig(env) {
         const raw = await env.IP_DATA.get(APP_CONFIG_KEY);
         if (!raw) return null;
         return normalizeSavedConfig(safeJSONParse(raw, {}));
-    } catch { return null; }
+    } catch {
+        return null;
+    }
 }
 
-async function createConfig(env, request = null) {
+function createEnvConfig(env = {}, request = null) {
     const config = { ...DEFAULT_CONFIG };
+    config.settings = normalizeRuntimeSettings();
+
     config.apiKey = env.CF_KEY || DEFAULT_CONFIG.apiKey;
     config.zoneId = env.CF_ZONEID || DEFAULT_CONFIG.zoneId;
     const envBaseDomain = String(env.CF_BASE_DOMAIN || '').trim();
-    config.zones = (config.apiKey || config.zoneId || envBaseDomain) ? [{ baseDomain: envBaseDomain, zoneId: config.zoneId, apiKey: config.apiKey, label: envBaseDomain || '环境变量配置' }] : [];
+    config.zones = (config.apiKey || config.zoneId || envBaseDomain)
+        ? [{ baseDomain: envBaseDomain, zoneId: config.zoneId, apiKey: config.apiKey, label: envBaseDomain || '环境变量配置' }]
+        : [];
     config.authKey = env.AUTH_KEY || DEFAULT_CONFIG.authKey;
     config.tgToken = env.TG_TOKEN || DEFAULT_CONFIG.tgToken;
     config.tgId = env.TG_ID || DEFAULT_CONFIG.tgId;
@@ -933,6 +1168,15 @@ async function createConfig(env, request = null) {
     config.checkApiBackup = env.CHECK_API_BACKUP || DEFAULT_CONFIG.checkApiBackup;
     config.dohApi = env.DOH_API || DEFAULT_CONFIG.dohApi;
     config.scheduledEnabled = parseBooleanConfig(env.SCHEDULED_ENABLED, DEFAULT_CONFIG.scheduledEnabled);
+    if (request) {
+        const url = new URL(request.url);
+        config.projectUrl = `${url.protocol}//${url.host}`;
+    }
+    return config;
+}
+
+async function createConfig(env, request = null) {
+    const config = createEnvConfig(env, request);
 
     const savedConfig = await loadSavedConfig(env);
     if (savedConfig) {
@@ -946,19 +1190,18 @@ async function createConfig(env, request = null) {
         }
         config.tgEnabled = savedConfig.tgEnabled;
         config.scheduledEnabled = savedConfig.scheduledEnabled;
-        if (savedConfig.targets.length > 0) config.targets = savedConfig.targets;
+        config.settings = savedConfig.settings;
+        if (savedConfig.targets.length > 0) {
+            config.targets = savedConfig.targets;
+        }
     }
 
-    if (request) {
-        const url = new URL(request.url);
-        config.projectUrl = `${url.protocol}//${url.host}`;
-    }
     return Object.freeze(config);
 }
 
-async function batchAddToTrash(env, entries) {
+async function batchAddToTrash(env, entries, config = {}) {
     if (!entries || entries.length === 0) return;
-    const trashKey = 'pool_trash';
+    const trashKey = POOL_TRASH_KEY;
     let trashList = parsePoolList(await env.IP_DATA.get(trashKey));
     const trashIPSet = new Set(trashList.map(t => extractIPKey(t)));
     const timestamp = new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
@@ -970,13 +1213,22 @@ async function batchAddToTrash(env, entries) {
             trashIPSet.add(ipAddr);
         }
     }
-    if (trashList.length > GLOBAL_SETTINGS.MAX_TRASH_SIZE) trashList = trashList.slice(-GLOBAL_SETTINGS.MAX_TRASH_SIZE);
+
+    const maxTrashSize = getRuntimeSettings(config).MAX_TRASH_SIZE;
+    if (trashList.length > maxTrashSize) {
+        trashList = maxTrashSize > 0 ? trashList.slice(-maxTrashSize) : [];
+    }
+
     await env.IP_DATA.put(trashKey, trashList.join('\n'));
 }
+
+// ==================== IP parsing / DNS lookup ====================
 
 function parseIPLine(line) {
     line = line.trim();
     if (!line || line.startsWith('#')) return null;
+
+    // 分离注释部分
     const { main: mainPart, comment } = splitComment(line);
     const fields = mainPart.split(',').map(item => item.trim());
     if (fields.length > 1) {
@@ -985,24 +1237,46 @@ function parseIPLine(line) {
         const metaFields = fields.slice(1, 4).map(item => item || 'null');
         return [extractIPKey(normalizedAddress), ...metaFields].join(',') + comment;
     }
+
     const isValidIP = ip => ip.split('.').every(o => { const n = Number(o); return n >= 0 && n <= 255; });
     const isValidPort = p => { const n = Number(p); return n >= 1 && n <= 65535; };
+
+    // IPv6 [addr]:PORT
     let match = mainPart.match(/^\[([0-9a-fA-F:]+)\]:(\d+)$/);
     if (match && isValidPort(match[2])) return `[${match[1]}]:${match[2]}${comment}`;
-    if (/^[0-9a-fA-F:]+$/.test(mainPart) && mainPart.includes(':')) return `[${mainPart.replace(/^\[/, '').replace(/\]$/, '')}]:443${comment}`;
+
+    // 纯IPv6（默认443端口）
+    if (/^[0-9a-fA-F:]+$/.test(mainPart) && mainPart.includes(':')) {
+        return `[${mainPart.replace(/^\[/, '').replace(/\]$/, '')}]:443${comment}`;
+    }
+
+    // IP:PORT 格式
     match = mainPart.match(/^(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}):(\d+)$/);
     if (match && isValidIP(match[1]) && isValidPort(match[2])) return `${match[1]}:${match[2]}${comment}`;
+
+    // IP：PORT 格式（中文冒号）
     match = mainPart.match(/^(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})：(\d+)$/);
     if (match && isValidIP(match[1]) && isValidPort(match[2])) return `${match[1]}:${match[2]}${comment}`;
+
+    // IP 空格/Tab PORT
     const parts = mainPart.split(/\s+/);
     if (parts.length === 2) {
         const ip = parts[0].trim();
         const port = parts[1].trim();
-        if (/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(ip) && /^\d+$/.test(port) && isValidIP(ip) && isValidPort(port)) return `${ip}:${port}${comment}`;
+        if (/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(ip) && /^\d+$/.test(port) && isValidIP(ip) && isValidPort(port)) {
+            return `${ip}:${port}${comment}`;
+        }
     }
-    if (/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(mainPart) && isValidIP(mainPart)) return `${mainPart}:443${comment}`;
+
+    // 纯IP（默认443端口）
+    if (/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(mainPart) && isValidIP(mainPart)) {
+        return `${mainPart}:443${comment}`;
+    }
+
+    // 复杂格式
     const complexMatch = mainPart.match(/(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\D+(\d+)/);
     if (complexMatch && isValidIP(complexMatch[1]) && isValidPort(complexMatch[2])) return `${complexMatch[1]}:${complexMatch[2]}${comment}`;
+
     return null;
 }
 
@@ -1010,39 +1284,89 @@ function cleanIPList(text) {
     if (!text) return '';
     const map = new Map();
     const lines = text.split('\n');
+
     for (let line of lines) {
         line = line.trim();
         if (!line || line.startsWith('#')) continue;
+
         const parsed = parseIPLine(line);
         if (parsed) {
             const key = extractIPKey(parsed);
             map.set(key, parsed);
         }
     }
+
     return Array.from(map.values()).join('\n');
 }
 
+async function loadFromRemoteUrl(url, config = {}) {
+    try {
+        const parsed = new URL(url);
+        if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return '';
+        const hostname = parsed.hostname.toLowerCase();
+        if (hostname === 'localhost' ||
+            hostname.startsWith('127.') ||
+            hostname.startsWith('10.') ||
+            hostname.startsWith('192.168.') ||
+            /^172\.(1[6-9]|2\d|3[01])\./.test(hostname) ||
+            hostname.startsWith('169.254.') ||   // 链路本地地址 (AWS/GCP 元数据服务等)
+            hostname.startsWith('100.64.') ||    // 运营商级 NAT (RFC 6598)
+            hostname === 'metadata.google.internal' ||
+            hostname === '0.0.0.0' ||
+            hostname === '::1' ||
+            hostname === '[::1]' ||
+            hostname.startsWith('fc00:') ||
+            hostname.startsWith('fe80:') ||
+            hostname.startsWith('[fc00:') ||
+            hostname.startsWith('[fe80:')) return '';
+    } catch { return ''; }
+
+    try {
+        const r = await fetch(url, {
+            signal: AbortSignal.timeout(getRuntimeSettings(config).REMOTE_LOAD_TIMEOUT)
+        });
+        if (r.ok) {
+            const text = await r.text();
+            return cleanIPList(text);
+        }
+    } catch (e) {
+        console.error(`❌ 远程加载失败 ${url}:`, e);
+    }
+    return '';
+}
+
 async function dohQuery(domain, type, config) {
+    const settings = getRuntimeSettings(config);
     try {
         const r = await fetch(`${config.dohApi}?name=${encodeURIComponent(domain)}&type=${encodeURIComponent(type)}`, {
-            headers: { 'accept': 'application/dns-json' }, signal: AbortSignal.timeout(GLOBAL_SETTINGS.DOH_TIMEOUT)
+            headers: { 'accept': 'application/dns-json' },
+            signal: AbortSignal.timeout(settings.DOH_TIMEOUT)
         });
         const d = await r.json();
         return Array.isArray(d.Answer) ? d.Answer : [];
-    } catch (e) { return []; }
+    } catch (e) {
+        console.error(`❌ DNS ${type}记录解析失败:`, e);
+        return [];
+    }
 }
 
 async function resolveDomainRecords(domain, config) {
-    const [aRecords, aaaaRecords] = await Promise.all([ dohQuery(domain, 'A', config), dohQuery(domain, 'AAAA', config) ]);
+    const [aRecords, aaaaRecords] = await Promise.all([
+        dohQuery(domain, 'A', config),
+        dohQuery(domain, 'AAAA', config)
+    ]);
+
     const records = [
         ...aRecords.filter(a => a.type === 1 && a.data).map(a => ({ type: 'A', ip: a.data })),
         ...aaaaRecords.filter(a => a.type === 28 && a.data).map(a => ({ type: 'AAAA', ip: a.data }))
     ];
+
     const seen = new Set();
     return records.filter(record => {
         const key = `${record.type}:${record.ip}`;
         if (seen.has(key)) return false;
-        seen.add(key); return true;
+        seen.add(key);
+        return true;
     });
 }
 
@@ -1052,35 +1376,62 @@ async function resolveDomain(domain, config) {
 }
 
 async function resolveTXTRecord(domain, config) {
+    const settings = getRuntimeSettings(config);
     try {
         const r = await fetch(`${config.dohApi}?name=${encodeURIComponent(domain)}&type=TXT`, {
-            headers: { 'accept': 'application/dns-json' }, signal: AbortSignal.timeout(GLOBAL_SETTINGS.DOH_TIMEOUT)
+            headers: { 'accept': 'application/dns-json' },
+            signal: AbortSignal.timeout(settings.DOH_TIMEOUT)
         });
         const d = await r.json();
-        if (!d.Answer?.length) return { raw: '', ips: [] };
+
+        if (!d.Answer?.length) {
+            return { raw: '', ips: [] };
+        }
+
+        // 去掉DNS返回的引号
         const rawData = d.Answer[0].data;
-        return { raw: rawData.replace(/^"|"$/g, ''), ips: parseTXTContent(rawData) };
-    } catch (e) { return { raw: '', ips: [] }; }
+        const ips = parseTXTContent(rawData);
+        const raw = rawData.replace(/^"|"$/g, '');
+
+        return { raw, ips };
+    } catch (e) {
+        console.error('❌ DNS TXT记录解析失败:', e);
+        return { raw: '', ips: [] };
+    }
 }
 
-function normalizeTextValue(value) { return value === undefined || value === null ? '' : String(value).trim(); }
+function normalizeTextValue(value) {
+    if (value === undefined || value === null) return '';
+    return String(value).trim();
+}
+
+// ==================== Proxy check normalization ====================
+
 function normalizeNumberValue(value, fallback = '-') {
     if (value === undefined || value === null || value === '') return fallback;
     if (typeof value === 'number' && Number.isFinite(value)) return value;
     const match = String(value).match(/\d+(?:\.\d+)?/);
     return match ? Number(match[0]) : fallback;
 }
-function normalizeAsnValue(value) { return normalizeTextValue(value).replace(/^AS/i, ''); }
+
+function normalizeAsnValue(value) {
+    const text = normalizeTextValue(value);
+    if (!text) return '';
+    return text.replace(/^AS/i, '');
+}
 
 function normalizeExitInfo(stack, exit, fallbackColo = '') {
     if (!exit || typeof exit !== 'object') return null;
+    const asn = normalizeAsnValue(exit.asn ?? exit.as ?? exit.asNumber);
     return {
-        stack, ip: normalizeTextValue(exit.ip ?? exit.address ?? exit.query),
+        stack,
+        ip: normalizeTextValue(exit.ip ?? exit.address ?? exit.query),
         ipType: normalizeTextValue(exit.ipType ?? exit.type ?? stack),
         colo: normalizeTextValue(exit.colo) || fallbackColo,
         country: normalizeTextValue(exit.country ?? exit.countryCode),
-        city: normalizeTextValue(exit.city), loc: normalizeTextValue(exit.loc ?? exit.location),
-        asn: normalizeAsnValue(exit.asn ?? exit.as ?? exit.asNumber),
+        city: normalizeTextValue(exit.city),
+        loc: normalizeTextValue(exit.loc ?? exit.location),
+        asn,
         asOrganization: normalizeTextValue(exit.asOrganization ?? exit.asname ?? exit.org ?? exit.isp)
     };
 }
@@ -1093,6 +1444,7 @@ function extractCheckExits(data) {
             if (exit) exits.push(exit);
         }
     }
+
     const probes = data?.probe_results ?? data?.probeResults ?? data?.probes ?? {};
     if (probes && typeof probes === 'object') {
         for (const [stack, probe] of Object.entries(probes)) {
@@ -1101,18 +1453,26 @@ function extractCheckExits(data) {
             if (ok && exit) exits.push(exit);
         }
     }
+
     const directExit = normalizeExitInfo('default', data?.exit ?? data?.egress, data?.colo);
-    if (directExit && !exits.some(item => item.ip === directExit.ip && item.stack === directExit.stack)) exits.push(directExit);
+    if (directExit && !exits.some(item => item.ip === directExit.ip && item.stack === directExit.stack)) {
+        exits.push(directExit);
+    }
+
     return exits;
 }
 
 function getPreferredExitInfo(exits) {
-    return exits.find(item => item.stack === 'ipv4') || exits.find(item => item.stack === 'ipv6') || exits[0] || null;
+    return exits.find(item => item.stack === 'ipv4') ||
+        exits.find(item => item.stack === 'ipv6') ||
+        exits[0] ||
+        null;
 }
 
 function inferCheckStack(data, exits) {
     const raw = normalizeTextValue(data?.inferred_stack ?? data?.ip_stack ?? data?.stack);
     if (raw) return normalizeStackFilter(raw);
+
     const supportsIpv4 = data?.supports_ipv4 === true || exits.some(item => ['ipv4', 'v4'].includes(normalizeTextValue(item.stack).toLowerCase()));
     const supportsIpv6 = data?.supports_ipv6 === true || exits.some(item => ['ipv6', 'v6'].includes(normalizeTextValue(item.stack).toLowerCase()));
     if (data?.dual_stack === true || (supportsIpv4 && supportsIpv6)) return 'v4/v6';
@@ -1122,7 +1482,7 @@ function inferCheckStack(data, exits) {
 }
 
 function joinMetaValues(values) {
-    const unique = Array.from(new Set(values.map(normalizeTextValue).filter(Boolean)));
+    const unique = Array.from(new Set(values.map(value => normalizeTextValue(value)).filter(Boolean)));
     return unique.length ? unique.join('/') : 'null';
 }
 
@@ -1130,23 +1490,42 @@ function normalizeCheckResult(data, requestedAddr = '') {
     if (!data || typeof data !== 'object') {
         return { success: false, candidate: requestedAddr, proxyIP: '', portRemote: '', responseTime: '-', colo: 'N/A', exits: [], ipInfo: null, asn: 'null', country: 'null', stack: 'null' };
     }
+
     const exits = extractCheckExits(data);
     const preferredExit = getPreferredExitInfo(exits);
-    const success = data.success === true || data.ok === true || data.status === 'success' || exits.length > 0;
+    const success = data.success === true ||
+        data.ok === true ||
+        data.status === 'success' ||
+        exits.length > 0;
     const stack = inferCheckStack(data, exits);
+    const asn = joinMetaValues(exits.map(item => item.asn));
+    const country = joinMetaValues(exits.map(item => item.country));
+
     const ipInfo = preferredExit ? {
-        country: preferredExit.country || '未知', countryCode: '', city: preferredExit.city || '',
-        isp: preferredExit.asOrganization || '', asn: preferredExit.asn ? `AS${preferredExit.asn}` : '', asname: preferredExit.asOrganization || ''
+        country: preferredExit.country || '未知',
+        countryCode: '',
+        city: preferredExit.city || '',
+        isp: preferredExit.asOrganization || '',
+        asn: preferredExit.asn ? `AS${preferredExit.asn}` : '',
+        asname: preferredExit.asOrganization || ''
     } : null;
 
     return {
-        success, candidate: normalizeTextValue(data.candidate) || requestedAddr,
+        success,
+        candidate: normalizeTextValue(data.candidate) || requestedAddr,
         proxyIP: normalizeTextValue(data.proxyIP ?? data.proxyIp ?? data.ip) || extractHostFromAddr(requestedAddr),
         portRemote: normalizeTextValue(data.portRemote ?? data.port ?? data.remotePort) || extractPortFromAddr(requestedAddr),
         responseTime: normalizeNumberValue(data.responseTime ?? data.latency ?? data.duration ?? data.elapsed ?? data.time),
-        colo: normalizeTextValue(data.colo ?? preferredExit?.colo) || 'N/A', message: normalizeTextValue(data.message ?? data.error),
-        exits, ipInfo, asn: joinMetaValues(exits.map(item => item.asn)), country: joinMetaValues(exits.map(item => item.country)), stack,
-        supportsIpv4: stack === 'v4' || stack === 'v4/v6', supportsIpv6: stack === 'v6' || stack === 'v4/v6', dualStack: stack === 'v4/v6'
+        colo: normalizeTextValue(data.colo ?? preferredExit?.colo) || 'N/A',
+        message: normalizeTextValue(data.message ?? data.error),
+        exits,
+        ipInfo,
+        asn,
+        country,
+        stack,
+        supportsIpv4: stack === 'v4' || stack === 'v4/v6',
+        supportsIpv6: stack === 'v6' || stack === 'v4/v6',
+        dualStack: stack === 'v4/v6'
     };
 }
 
@@ -1183,123 +1562,284 @@ function buildCheckApiUrl(apiUrl, addr) {
     return `${apiUrl}${encoded}`;
 }
 
-async function batchCheckIPs(ipList, checkFn, config, useBackupApi = false) {
+// 批量检测IP列表，可选查询归属地
+async function batchCheckIPs(ipList, checkFn, config) {
     if (!ipList || ipList.length === 0) return [];
-    const effectiveCheckFn = (useBackupApi && config.checkApiBackup)
-        ? (addr) => checkProxyIPOnce(normalizeCheckAddr(addr), config.checkApiBackup).then(r => r ?? { success: false }) : checkFn;
+
+    const effectiveCheckFn = checkFn;
 
     const checkSettled = await Promise.allSettled(ipList.map(addr => effectiveCheckFn(addr)));
-    const checkResults = checkSettled.map((r, i) => r.status === 'fulfilled' ? normalizeCheckResult(r.value, ipList[i]) : normalizeCheckResult({ success: false }, ipList[i]));
+    const checkResults = checkSettled.map((r, i) => r.status === 'fulfilled'
+        ? normalizeCheckResult(r.value, ipList[i])
+        : normalizeCheckResult({ success: false }, ipList[i]));
 
     return checkResults.map((result, i) => ({
-        address: ipList[i], success: result.success, colo: result.colo || 'N/A', time: result.responseTime || '-',
-        exits: result.exits || [], proxyIP: result.proxyIP || extractHostFromAddr(ipList[i]),
-        portRemote: result.portRemote || extractPortFromAddr(ipList[i]), ipInfo: result.ipInfo || null,
-        asn: result.asn || 'null', country: result.country || 'null', stack: result.stack || 'null'
+        address: ipList[i],
+        success: result.success,
+        colo: result.colo || 'N/A',
+        time: result.responseTime || '-',
+        exits: result.exits || [],
+        proxyIP: result.proxyIP || extractHostFromAddr(ipList[i]),
+        portRemote: result.portRemote || extractPortFromAddr(ipList[i]),
+        ipInfo: result.ipInfo || null,
+        asn: result.asn || 'null',
+        country: result.country || 'null',
+        stack: result.stack || 'null'
     }));
 }
 
 async function getDomainStatus(target, config) {
     const cfConfig = getTargetCFConfig(config, target);
-    const result = { mode: target.mode, domain: target.domain, port: target.port, aRecords: [], txtRecords: [], error: null };
+    const result = {
+        mode: target.mode,
+        domain: target.domain,
+        port: target.port,
+        aRecords: [],
+        txtRecords: [],
+        error: null
+    };
 
     if (target.mode === 'A') {
         const [aRecords, aaaaRecords] = await Promise.all([
             fetchCF(cfConfig, `/zones/${cfConfig.zoneId}/dns_records?name=${target.domain}&type=A`),
             fetchCF(cfConfig, `/zones/${cfConfig.zoneId}/dns_records?name=${target.domain}&type=AAAA`)
         ]);
-        if (aRecords === null || aaaaRecords === null) { result.error = CF_ERROR_MSG; return result; }
+        if (aRecords === null || aaaaRecords === null) {
+            result.error = CF_ERROR_MSG;
+            return result;
+        }
         const records = [...aRecords, ...aaaaRecords];
+        // 使用批量检测流程
         const ipList = records.map(r => formatAddr(r.content, target.port));
         const checkResults = await batchCheckIPs(ipList, (addr) => checkProxyIP(addr, config), config);
 
         result.aRecords = records.map((r, i) => ({
-            id: r.id, recordType: r.type, ip: r.content, port: target.port, address: formatAddr(r.content, target.port),
-            ...checkResults[i]
+            id: r.id,
+            recordType: r.type,
+            ip: r.content,
+            port: target.port,
+            address: formatAddr(r.content, target.port),
+            success: checkResults[i].success,
+            colo: checkResults[i].colo,
+            time: checkResults[i].time,
+            exits: checkResults[i].exits,
+            proxyIP: checkResults[i].proxyIP,
+            portRemote: checkResults[i].portRemote,
+            asn: checkResults[i].asn,
+            country: checkResults[i].country,
+            stack: checkResults[i].stack,
+            ipInfo: checkResults[i].ipInfo
         }));
     }
 
     if (target.mode === 'TXT') {
         const records = await fetchCF(cfConfig, `/zones/${cfConfig.zoneId}/dns_records?name=${target.domain}&type=TXT`);
-        if (!records) { result.error = CF_ERROR_MSG; return result; }
+        if (!records) {
+            result.error = CF_ERROR_MSG;
+            return result;
+        }
         if (records.length > 0) {
             const ips = parseTXTContent(records[0].content);
+
+            // 使用批量检测流程
             const checkResults = await batchCheckIPs(ips, (addr) => checkProxyIP(addr, config), config);
-            result.txtRecords = [{ id: records[0].id, ips: checkResults.map(r => ({ ...r, ip: r.address })) }];
+
+            const txtChecks = checkResults.map(result => ({
+                ip: result.address,
+                address: result.address,
+                success: result.success,
+                colo: result.colo,
+                time: result.time,
+                exits: result.exits,
+                proxyIP: result.proxyIP,
+                portRemote: result.portRemote,
+                asn: result.asn,
+                country: result.country,
+                stack: result.stack,
+                ipInfo: result.ipInfo
+            }));
+
+            result.txtRecords = [{
+                id: records[0].id,
+                ips: txtChecks
+            }];
         }
     }
+
     return result;
 }
 
-async function checkProxyIPOnce(addr, apiUrl) {
+// 单次检测IP（不带重试）
+async function checkProxyIPOnce(addr, apiUrl, config = {}) {
+    const timeout = getRuntimeSettings(config).CHECK_TIMEOUT;
     try {
         const url = buildCheckApiUrl(apiUrl, addr);
-        const r = await fetch(url, { signal: AbortSignal.timeout(GLOBAL_SETTINGS.CHECK_TIMEOUT) });
+
+        const r = await fetch(url, { signal: AbortSignal.timeout(timeout) });
         if (!r.ok) return null;
+
         const data = safeJSONParse(await r.text(), null);
         return data && typeof data === 'object' ? normalizeCheckResult(data, addr) : null;
-    } catch { return null; }
+    } catch {
+        return null;
+    }
 }
 
-function normalizeCheckAddr(input) { return parseAddr(input || '').address; }
+function normalizeCheckAddr(input) {
+    return parseAddr(input || '').address;
+}
 
 async function checkProxyIP(input, config) {
     const addr = normalizeCheckAddr(input);
-    const result = await checkProxyIPOnce(addr, config.checkApi);
-    if (result !== null) return result;
+
+    // 主接口检测
+    const result = await checkProxyIPOnce(addr, config.checkApi, config);
+    if (result?.success) return result;
+
+    // 主接口调用失败或判定不可用时，使用备用接口复检
     if (config.checkApiBackup) {
-        const backup = await checkProxyIPOnce(addr, config.checkApiBackup);
+        const backup = await checkProxyIPOnce(addr, config.checkApiBackup, config);
         if (backup !== null) return backup;
     }
-    return normalizeCheckResult({ success: false }, addr);
+
+    return result ?? normalizeCheckResult({ success: false }, addr);
 }
 
 async function fetchCF(config, path, method = 'GET', body = null) {
-    if (!config.apiKey || !config.zoneId) return null;
-    const headers = { 'Authorization': `Bearer ${config.apiKey}`, 'Content-Type': 'application/json' };
+    if (!config.apiKey || !config.zoneId) {
+        console.error('❌ Cloudflare配置不完整:', {
+            apiKey: !!config.apiKey,
+            zoneId: !!config.zoneId
+        });
+        return null;
+    }
+
+    const headers = {
+        'Authorization': `Bearer ${config.apiKey}`,
+        'Content-Type': 'application/json'
+    };
     const init = { method, headers };
     if (body) init.body = JSON.stringify(body);
 
     try {
         const r = await fetch(`https://api.cloudflare.com/client/v4${path}`, init);
         const d = await r.json();
-        return d.success ? d.result : null;
-    } catch (e) { return null; }
+
+        if (!d.success) {
+            console.error('❌ Cloudflare API错误:', {
+                path,
+                method,
+                errors: d.errors,
+                messages: d.messages
+            });
+            return null;
+        }
+
+        return d.result;
+    } catch (e) {
+        console.error('❌ Cloudflare API请求失败:', {
+            path,
+            method,
+            error: e.message
+        });
+        return null;
+    }
 }
+
+// ==================== Maintenance workflow ====================
 
 function getTargetCFConfig(config, target) {
-    const zone = Number.isInteger(target?.zoneIndex) && Array.isArray(config.zones) ? config.zones[target.zoneIndex] : null;
-    return { ...config, apiKey: zone?.apiKey || config.apiKey, zoneId: zone?.zoneId || config.zoneId };
+    const zone = Number.isInteger(target?.zoneIndex) && Array.isArray(config.zones)
+        ? config.zones[target.zoneIndex]
+        : null;
+    return {
+        ...config,
+        apiKey: zone?.apiKey || config.apiKey,
+        zoneId: zone?.zoneId || config.zoneId
+    };
 }
 
-async function deleteDNSRecord(cfConfig, id) { return await fetchCF(cfConfig, `/zones/${cfConfig.zoneId}/dns_records/${id}`, 'DELETE') !== null; }
+async function deleteDNSRecord(cfConfig, id) {
+    return await fetchCF(cfConfig, `/zones/${cfConfig.zoneId}/dns_records/${id}`, 'DELETE') !== null;
+}
 
 async function upsertTXTRecord(cfConfig, domain, recordId, ips) {
     const content = `"${ips.join(',')}"`;
-    const payload = { type: 'TXT', name: domain, content, ttl: 60 };
-    if (recordId) return await fetchCF(cfConfig, `/zones/${cfConfig.zoneId}/dns_records/${recordId}`, 'PUT', payload) !== null;
-    return await fetchCF(cfConfig, `/zones/${cfConfig.zoneId}/dns_records`, 'POST', payload) !== null;
+    if (recordId) {
+        return await fetchCF(cfConfig, `/zones/${cfConfig.zoneId}/dns_records/${recordId}`, 'PUT', {
+            type: 'TXT',
+            name: domain,
+            content,
+            ttl: 60
+        }) !== null;
+    }
+    return await fetchCF(cfConfig, `/zones/${cfConfig.zoneId}/dns_records`, 'POST', {
+        type: 'TXT',
+        name: domain,
+        content,
+        ttl: 60
+    }) !== null;
 }
 
 async function addAddressRecord(cfConfig, domain, ip) {
     const content = String(ip || '').replace(/^\[/, '').replace(/\]$/, '');
     const recordType = getDNSRecordTypeForIP(content);
-    const result = await fetchCF(cfConfig, `/zones/${cfConfig.zoneId}/dns_records`, 'POST', { type: recordType, name: domain, content, ttl: 60, proxied: false });
+    const result = await fetchCF(cfConfig, `/zones/${cfConfig.zoneId}/dns_records`, 'POST', {
+        type: recordType,
+        name: domain,
+        content,
+        ttl: 60,
+        proxied: false
+    });
     return { ok: result !== null, type: recordType };
 }
 
 async function getCandidateIPs(env, target, addLog, poolKey) {
     const pool = await env.IP_DATA.get(poolKey) || '';
-    if (!pool) { addLog(`⚠️ ${poolKey} 为空`); return []; }
+    const poolName = getPoolFixedName(poolKey);
+    
+    if (!pool) {
+        addLog(`⚠️ ${poolName} 为空`);
+        return [];
+    }
+    
     let candidates = parsePoolList(pool);
     
+    // TXT模式不过滤端口，地址记录模式才过滤
     if (target.mode === 'A') {
-        candidates = candidates.filter(l => extractPortFromAddr(extractIPKey(l)) === target.port && targetMetaMatchesStoredEntry(l, target));
+        candidates = candidates.filter(l => {
+            const ipPort = extractIPKey(l);
+            return extractPortFromAddr(ipPort) === target.port && targetMetaMatchesStoredEntry(l, target);
+        });
     } else {
         candidates = candidates.filter(l => targetMetaMatchesStoredEntry(l, target));
     }
-    addLog(`📦 ${poolKey}: 匹配条件候选IP ${candidates.length} 个`);
+    
+    addLog(`📦 使用 ${poolName}: ${candidates.length} 个候选IP`);
     return candidates;
+}
+
+async function checkCurrentItems(currentItems, checkFn) {
+    const settled = await Promise.allSettled(
+        currentItems.map(item => checkFn(item.addr).then(
+            result => ({ item, result: normalizeCheckResult(result, item.addr) }),
+            () => ({ item, result: normalizeCheckResult({ success: false }, item.addr) })
+        ))
+    );
+    return settled
+        .map(r => r.status === 'fulfilled' ? r.value : null)
+        .filter(Boolean);
+}
+
+function appendCheckDetail(report, item, result) {
+    report.checkDetails.push({
+        ip: item.addr,
+        status: result.success ? '✅ 活跃' : '❌ 失效',
+        colo: result.colo || 'N/A',
+        time: result.responseTime || '-',
+        country: result.country || 'null',
+        asn: result.asn || 'null'
+    });
 }
 
 function removePoolEntry(poolList, ipAddr) {
@@ -1308,178 +1848,140 @@ function removePoolEntry(poolList, ipAddr) {
     return { list: next, removed: before !== next.length };
 }
 
-async function savePoolAndTrash(env, poolKey, poolList, poolModified, trashBatch) {
-    if (trashBatch.length > 0) await batchAddToTrash(env, trashBatch);
+async function savePoolAndTrash(env, poolKey, poolList, poolModified, trashBatch, config = {}) {
+    if (trashBatch.length > 0) await batchAddToTrash(env, trashBatch, config);
     if (poolModified) await env.IP_DATA.put(poolKey, poolList.join('\n'));
 }
 
-async function maintainARecords(env, target, addLog, report, poolKey, checkFn, config, budget) {
+function sameAddressSet(a, b) {
+    if (a.length !== b.length) return false;
+    const set = new Set(a);
+    return b.every(item => set.has(item));
+}
+
+async function maintainARecords(env, target, addLog, report, poolKey, checkFn, config) {
     const filters = [target.country ? `国家:${target.country}` : '', target.asn ? `ASN:${target.asn}` : ''].filter(Boolean).join(', ') || '无';
-    addLog(`📋 强制轮换维护(A/AAAA): ${target.domain}:${target.port} (需凑齐: ${target.minActive}, 筛选: ${filters})`);
+    addLog(`📋 维护地址记录(A/AAAA): ${target.domain}:${target.port} (最小活跃数: ${target.minActive}, 筛选: ${filters})`);
     const cfConfig = getTargetCFConfig(config, target);
 
-    // 1. 获取现有记录 (消耗 2 次子请求)
-    budget.fetchLeft -= 2; 
     const [aRecords, aaaaRecords] = await Promise.all([
         fetchCF(cfConfig, `/zones/${cfConfig.zoneId}/dns_records?name=${target.domain}&type=A`),
         fetchCF(cfConfig, `/zones/${cfConfig.zoneId}/dns_records?name=${target.domain}&type=AAAA`)
     ]);
 
     if (aRecords === null || aaaaRecords === null) {
-        addLog(`❌ 无法获取A/AAAA记录 - CF配置错误 (或已被流控拦截)`);
+        addLog(`❌ 无法获取A/AAAA记录 - 请检查CF配置`);
         report.configError = true;
         return;
     }
 
-    const currentRecords = [...aRecords, ...aaaaRecords];
-    addLog(`⚠️ 发现旧记录 ${currentRecords.length} 条，准备执行 Batch 批量替换`);
+    const records = [...aRecords, ...aaaaRecords];
+    addLog(`当前地址记录: A ${aRecords.length} 条 / AAAA ${aaaaRecords.length} 条`);
 
     let poolList = parsePoolList(await env.IP_DATA.get(poolKey));
     let poolModified = false;
     const trashBatch = [];
-    
-    const readyNodes = []; 
+    const validHosts = [];
     report.poolKeyUsed = poolKey;
 
-    let candidates = await getCandidateIPs(env, target, addLog, poolKey);
-    candidates = candidates.sort(() => Math.random() - 0.5);
+    const currentItems = records.map(({ id, content, type }) => ({
+        id,
+        type,
+        addr: formatAddr(content, target.port),
+        host: content
+    }));
 
-    // 2. 盲测并挑选新节点 (双IP并发批测优化版)
-    // 2.1 先筛选出符合基础格式的有效候选名单
-    const validCandidates = [];
-    for (const item of candidates) {
-        const ipPort = extractIPKey(item);
-        const parsed = parseAddr(ipPort, target.port);
-        if (ipPort && parsed.port === target.port && !readyNodes.some(n => n.host === parsed.host)) {
-            validCandidates.push({ ipPort, host: parsed.host });
+    for (const { item, result } of await checkCurrentItems(currentItems, checkFn)) {
+        appendCheckDetail(report, item, result);
+        const matches = result.success && exitFilterMatchesResult(result, target.exitFilter) && targetMetaMatchesResult(result, target);
+        if (matches) {
+            validHosts.push(item.host);
+            addLog(`  ✅ ${item.addr} - ${result.colo} (${result.responseTime}ms)`);
+            continue;
         }
+
+        const reason = result.success ? '出口/国家/ASN不匹配' : '检测失效';
+        report.removed.push({ ip: item.addr, reason, colo: result.colo || 'N/A', time: result.responseTime || '-', country: result.country || 'null', asn: result.asn || 'null' });
+        await deleteDNSRecord(cfConfig, item.id);
+
+        const removed = removePoolEntry(poolList, item.addr);
+        poolList = removed.list;
+        if (removed.removed) {
+            report.poolRemoved++;
+            poolModified = true;
+        }
+        trashBatch.push({ ipAddr: item.addr, reason: result.success ? '出口/国家/ASN不匹配' : '维护失效', poolKey });
+        addLog(result.success
+            ? `  ❌ ${item.addr} - 出口/国家/ASN不匹配，已删除`
+            : `  ❌ ${item.addr} - 失效已删除，已放入垃圾桶`);
     }
 
-    // 2.2 每次取出 2 个 IP 组合成一批进行测试
-    const BATCH_SIZE = 2; // 根据接口特性，每次合并测 2 个 IP
-    for (let i = 0; i < validCandidates.length; i += BATCH_SIZE) {
-        if (readyNodes.length >= target.minActive) break;
-        if (budget.fetchLeft <= 2) { 
-            addLog(`⚠️ 子请求配额即将耗尽，提前终止测新，保留配额给最终 API 提交`);
-            break;
-        }
+    report.beforeActive = validHosts.length;
 
-        const batch = validCandidates.slice(i, i + BATCH_SIZE);
-        const ipString = batch.map(b => b.ipPort).join(','); // 用逗号拼接
-        
-        // 发送 1 次请求，测试 2 个 IP
-        budget.fetchLeft -= (config.checkApiBackup ? 2 : 1); 
-        
-        let apiResponses = [];
-        try {
-            const rawRes = await checkFn(ipString);
-            apiResponses = Array.isArray(rawRes) ? rawRes : [rawRes];
-        } catch (e) {
-            addLog(`  ⚠️ 批量测活请求失败`);
-        }
+    if (validHosts.length < target.minActive) {
+        addLog(`需补充: ${target.minActive - validHosts.length} 个`);
+        const candidates = await getCandidateIPs(env, target, addLog, poolKey);
 
-        // 2.3 分别解析这两个 IP 的结果
-        for (let j = 0; j < batch.length; j++) {
-            if (readyNodes.length >= target.minActive) break;
-            
-            const node = batch[j];
-            const rawNodeRes = apiResponses.find(r => r && (r.proxyip === node.ipPort || r.ip === node.ipPort)) || apiResponses[j] || { success: false };
-            
-            const result = normalizeCheckResult(rawNodeRes, node.ipPort);
+        for (const item of candidates) {
+            if (validHosts.length >= target.minActive) break;
+            const ipPort = extractIPKey(item);
+            const parsed = parseAddr(ipPort, target.port);
+            if (!ipPort || parsed.port !== target.port || validHosts.includes(parsed.host)) continue;
+
+            const result = normalizeCheckResult(await checkFn(ipPort), ipPort);
             const matches = result.success && exitFilterMatchesResult(result, target.exitFilter) && targetMetaMatchesResult(result, target);
-            
-            if (matches) {
-                readyNodes.push({ host: node.host, ipPort: node.ipPort, result });
-                addLog(`  ✅ [批测] 通过待上线: ${node.ipPort} - ${result.colo}`);
-            } else {
-                if (!result.success) {
-                    const removed = removePoolEntry(poolList, node.ipPort);
+            if (!matches) {
+                if (result.success) {
+                    addLog(`  ⏭️ ${ipPort} - 出口/国家/ASN不匹配`);
+                } else {
+                    const removed = removePoolEntry(poolList, ipPort);
                     poolList = removed.list;
-                    if (removed.removed) { report.poolRemoved++; poolModified = true; }
-                    trashBatch.push({ ipAddr: node.ipPort, reason: '轮换盲测失效', poolKey });
-                    addLog(`  ❌ [批测] 抽中失效，移入垃圾桶: ${node.ipPort}`);
+                    if (removed.removed) {
+                        report.poolRemoved++;
+                        poolModified = true;
+                    }
+                    trashBatch.push({ ipAddr: ipPort, reason: '补充检测失败', poolKey });
+                    addLog(`  ❌ ${ipPort} - 检测失败，从池中移除并放入垃圾桶`);
                 }
+                continue;
             }
-        }
-    }
 
-
-    report.afterActive = readyNodes.length;
-    if (readyNodes.length < target.minActive) {
-        report.poolExhausted = true;
-        addLog(`⚠️ 库存不足或配额受限，仅备妥 ${readyNodes.length}/${target.minActive} 个`);
-    }
-
-    // 3. 终极优化：使用 Batch DNS Records 批量提交
-    if (readyNodes.length > 0) {
-        const batchPayload = { deletes: [], puts: [], posts: [] };
-        let i = 0;
-        
-        for (; i < readyNodes.length; i++) {
-            const node = readyNodes[i];
-            const recordType = node.host.includes(':') ? 'AAAA' : 'A';
-            const recordData = {
-                name: target.domain,
-                type: recordType,
-                content: node.host,
-                ttl: 60,
-                proxied: false
-            };
-
-            if (i < currentRecords.length) {
-                // 覆盖旧记录
-                batchPayload.puts.push({ id: currentRecords[i].id, ...recordData });
-            } else {
-                // 新增记录
-                batchPayload.posts.push(recordData);
+            const added = await addAddressRecord(cfConfig, target.domain, parsed.host);
+            if (!added.ok) {
+                addLog(`  ⚠️ 添加${added.type}记录失败: ${parsed.host}`);
+                continue;
             }
-            report.added.push({ ip: node.ipPort, colo: node.result.colo || 'N/A', time: node.result.responseTime || '-', country: node.result.country || 'null', asn: node.result.asn || 'null' });
-        }
-        
-        // 清理多余的旧记录
-        for (; i < currentRecords.length; i++) {
-            batchPayload.deletes.push({ id: currentRecords[i].id });
-            report.removed.push({ ip: formatAddr(currentRecords[i].content, target.port), reason: '清理冗余', colo: 'N/A', time: '-' });
+            validHosts.push(parsed.host);
+            report.added.push({ ip: ipPort, colo: result.colo || 'N/A', time: result.responseTime || '-', country: result.country || 'null', asn: result.asn || 'null' });
+            addLog(`  ✅ ${ipPort} - ${result.colo} (${result.responseTime}ms)`);
         }
 
-        // 发起单次 Batch 请求，消耗锁定为 1
-        budget.fetchLeft -= 1;
-        addLog(`🚀 发起 Batch 批量更新 (覆盖:${batchPayload.puts.length}, 新增:${batchPayload.posts.length}, 删除:${batchPayload.deletes.length})`);
-        
-        const batchResult = await fetchCF(cfConfig, `/zones/${cfConfig.zoneId}/dns_records/batch`, 'POST', batchPayload);
-        
-        if (batchResult !== null) {
-            addLog(`✅ 批量更新成功！(仅消耗 1 次子请求)`);
-        } else {
-            addLog(`❌ 批量更新失败，请检查 API Token 是否具有 DNS:Edit 权限。`);
+        if (validHosts.length < target.minActive) {
+            report.poolExhausted = true;
+            addLog(`⚠️ ${getPoolFixedName(poolKey)} 库存不足，无法达到最小活跃数 ${target.minActive}`);
         }
-    } else {
-        addLog(`❌ 未能抽中可用节点！保留原有解析。`);
     }
 
-    // 4. 保存状态
-    await savePoolAndTrash(env, poolKey, poolList, poolModified, trashBatch);
+    await savePoolAndTrash(env, poolKey, poolList, poolModified, trashBatch, config);
     report.poolAfterCount = poolList.length;
+    report.afterActive = validHosts.length;
 }
 
-
-
-async function maintainTXTRecords(env, target, addLog, report, poolKey, checkFn, config, budget) {
+async function maintainTXTRecords(env, target, addLog, report, poolKey, checkFn, config) {
     const filters = [target.country ? `国家:${target.country}` : '', target.asn ? `ASN:${target.asn}` : ''].filter(Boolean).join(', ') || '无';
-    addLog(`📝 强制轮换维护(TXT): ${target.domain} (需凑齐: ${target.minActive}, 筛选: ${filters})`);
+    addLog(`📝 维护TXT: ${target.domain} (最小活跃数: ${target.minActive}, 筛选: ${filters})`);
     const cfConfig = getTargetCFConfig(config, target);
 
-    budget.fetchLeft -= 1; // 扣除请求额度
     const records = await fetchCF(cfConfig, `/zones/${cfConfig.zoneId}/dns_records?name=${target.domain}&type=TXT`);
     if (records === null) {
-        addLog(`❌ 无法获取TXT记录 - CF配置错误 (或已被流控拦截)`);
+        addLog(`❌ 无法获取TXT记录 - 请检查CF配置`);
         report.configError = true;
         return;
     }
 
     const record = records?.[0] || null;
     const originalIPs = record ? parseTXTContent(record.content) : [];
-    addLog(`⚠️ 发现旧记录包含 ${originalIPs.length} 个IP，等待新节点就绪后更新`);
+    addLog(`当前TXT: ${originalIPs.length} 个IP`);
 
     let poolList = parsePoolList(await env.IP_DATA.get(poolKey));
     let poolModified = false;
@@ -1487,74 +1989,96 @@ async function maintainTXTRecords(env, target, addLog, report, poolKey, checkFn,
     const validIPs = [];
     report.poolKeyUsed = poolKey;
 
-    let candidates = await getCandidateIPs(env, target, addLog, poolKey);
-    candidates = candidates.sort(() => Math.random() - 0.5);
-
-    for (const item of candidates) {
-        if (validIPs.length >= target.minActive) break;
-
-        // 🛡️ 踩刹车
-        if (budget.fetchLeft <= 0) {
-            addLog(`⚠️ 测活请求已达云端安全上限，强制停止测新`);
-            break;
+    const currentItems = originalIPs.map(addr => ({ addr, ip: addr }));
+    for (const { item, result } of await checkCurrentItems(currentItems, checkFn)) {
+        appendCheckDetail(report, item, result);
+        const matches = result.success && exitFilterMatchesResult(result, target.exitFilter) && targetMetaMatchesResult(result, target);
+        if (matches) {
+            validIPs.push(item.addr);
+            addLog(`  ✅ ${item.addr} - ${result.colo} (${result.responseTime}ms)`);
+            continue;
         }
 
-        const ipPort = extractIPKey(item);
-        if (!ipPort || validIPs.includes(ipPort)) continue;
+        const reason = result.success ? '出口/国家/ASN不匹配' : '检测失效';
+        report.removed.push({ ip: item.addr, reason, colo: result.colo || 'N/A', time: result.responseTime || '-', country: result.country || 'null', asn: result.asn || 'null' });
+        const removed = removePoolEntry(poolList, item.addr);
+        poolList = removed.list;
+        if (removed.removed) {
+            report.poolRemoved++;
+            poolModified = true;
+        }
+        trashBatch.push({ ipAddr: item.addr, reason: result.success ? '出口/国家/ASN不匹配' : '维护失效', poolKey });
+        addLog(result.success
+            ? `  ❌ ${item.addr} - 出口/国家/ASN不匹配，已从TXT移除`
+            : `  ❌ ${item.addr} - 失效，已从TXT移除并放入垃圾桶`);
+    }
 
-        budget.fetchLeft -= (config.checkApiBackup ? 2 : 1);
-        const result = normalizeCheckResult(await checkFn(ipPort), ipPort);
-        const matches = result.success && exitFilterMatchesResult(result, target.exitFilter) && targetMetaMatchesResult(result, target);
-        
-        if (matches) {
+    report.beforeActive = validIPs.length;
+
+    if (validIPs.length < target.minActive) {
+        addLog(`需补充: ${target.minActive - validIPs.length} 个`);
+        const candidates = await getCandidateIPs(env, target, addLog, poolKey);
+
+        for (const item of candidates) {
+            if (validIPs.length >= target.minActive) break;
+            const ipPort = extractIPKey(item);
+            if (!ipPort || validIPs.includes(ipPort)) continue;
+
+            const result = normalizeCheckResult(await checkFn(ipPort), ipPort);
+            const matches = result.success && exitFilterMatchesResult(result, target.exitFilter) && targetMetaMatchesResult(result, target);
+            if (!matches) {
+                if (result.success) {
+                    addLog(`  ⏭️ ${ipPort} - 出口/国家/ASN不匹配`);
+                } else {
+                    const removed = removePoolEntry(poolList, ipPort);
+                    poolList = removed.list;
+                    if (removed.removed) {
+                        report.poolRemoved++;
+                        poolModified = true;
+                    }
+                    trashBatch.push({ ipAddr: ipPort, reason: '补充检测失败', poolKey });
+                    addLog(`  ❌ ${ipPort} - 检测失败，从池中移除并放入垃圾桶`);
+                }
+                continue;
+            }
+
             validIPs.push(ipPort);
             report.added.push({ ip: ipPort, colo: result.colo || 'N/A', time: result.responseTime || '-', country: result.country || 'null', asn: result.asn || 'null' });
-            addLog(`  ✅ 抽中并备选: ${ipPort} - ${result.colo} (${result.responseTime}ms)`);
-        } else {
-            if (!result.success) {
-                const removed = removePoolEntry(poolList, ipPort);
-                poolList = removed.list;
-                if (removed.removed) { report.poolRemoved++; poolModified = true; }
-                trashBatch.push({ ipAddr: ipPort, reason: '轮换盲测失效', poolKey });
-                addLog(`  ❌ 抽中但失效: ${ipPort}，已移入垃圾桶`);
-            }
+            addLog(`  ✅ ${ipPort} - ${result.colo} (${result.responseTime}ms)`);
+        }
+
+        if (validIPs.length < target.minActive) {
+            report.poolExhausted = true;
+            addLog(`⚠️ ${getPoolFixedName(poolKey)} 库存不足，无法达到最小活跃数 ${target.minActive}`);
         }
     }
 
-    report.afterActive = validIPs.length;
-    if (validIPs.length < target.minActive) {
-        report.poolExhausted = true;
-        addLog(`⚠️ ${poolKey} 库存不足或测速达上限，仅抽中 ${validIPs.length}/${target.minActive} 个`);
-    }
-
-    if (validIPs.length > 0) {
-        budget.fetchLeft -= 1; 
-        const ok = await upsertTXTRecord(cfConfig, target.domain, record?.id, validIPs);
-        addLog(ok ? `📝 TXT已强制轮换更新` : `⚠️ TXT保存失败`);
+    const changed = !sameAddressSet(validIPs, originalIPs);
+    if (changed) {
+        if (validIPs.length === 0 && record?.id) {
+            const ok = await deleteDNSRecord(cfConfig, record.id);
+            addLog(ok ? `📝 TXT记录已删除（所有IP失效）` : `⚠️ TXT记录删除失败`);
+        } else if (validIPs.length > 0) {
+            const ok = await upsertTXTRecord(cfConfig, target.domain, record?.id, validIPs);
+            addLog(ok ? (record?.id ? `📝 TXT已更新` : `📝 TXT已创建`) : `⚠️ TXT保存失败`);
+        }
         report.txtUpdated = true;
-        for (const old of originalIPs) {
-            if (!validIPs.includes(old)) {
-                report.removed.push({ ip: old, reason: '大换血轮换下线', colo: 'N/A', time: '-', country: 'null', asn: 'null' });
-            }
-        }
-    } else {
-        addLog(`❌ 未能抽中存活节点！保留原有TXT记录不删除。`);
     }
 
-    await savePoolAndTrash(env, poolKey, poolList, poolModified, trashBatch);
+    await savePoolAndTrash(env, poolKey, poolList, poolModified, trashBatch, config);
     report.poolAfterCount = poolList.length;
+    report.afterActive = validIPs.length;
 }
-
-
-
 async function maintainAllDomains(env, isManual = false, config) {
     const allReports = [];
     const startTime = Date.now();
 
     const poolStats = new Map();
-    const mappingJson = await env.IP_DATA.get('domain_pool_mapping') || '{}';
-    const domainPoolMapping = safeJSONParse(mappingJson, {});
+    const poolNames = await readPoolDisplayNames(env);
+    await ensurePoolDefaults(env);
+    const domainPoolMapping = await readDomainPoolMapping(env);
 
+    // 单次维护任务内缓存 proxyip 检测结果，减少重复外部请求（不改变结果，仅减少请求次数）
     const checkCache = new Map();
     const checkProxyIPCached = async (addr) => {
         const key = (addr || '').trim();
@@ -1569,9 +2093,6 @@ async function maintainAllDomains(env, isManual = false, config) {
         checkCache.set(key, res);
         return res;
     };
-
-    // 🛡️ 新增：全局子请求配额防护机制 (最大50次，留12次余量给TG和兜底)
-    const budget = { fetchLeft: 38 };
 
     const poolKeys = await listPoolKeys(env);
     const poolSettled = await Promise.allSettled(
@@ -1591,17 +2112,25 @@ async function maintainAllDomains(env, isManual = false, config) {
             console.log(formatLogMessage(`⏸️ 跳过维护: ${target.domain} 已关闭`));
             continue;
         }
-
-        // 🛡️ 检测配额是否耗尽
-        if (budget.fetchLeft <= 0) {
-            console.log(formatLogMessage(`🛑 触发 Cloudflare 50次请求防线，强制跳过剩余域名的维护`));
-            break;
-        }
-
         const { domain, mode, port, minActive } = target;
+
         const report = {
-            target, domain, mode, port, minActive, beforeActive: 0, afterActive: 0,
-            added: [], removed: [], poolRemoved: 0, poolExhausted: false, configError: false, checkDetails: [], logs: []
+            target,
+            domain,
+            mode,
+            port,
+            minActive,
+            beforeActive: 0,
+            afterActive: 0,
+            added: [],
+            removed: [],
+            poolRemoved: 0,
+            poolExhausted: false,
+            poolKeyUsed: '',
+            poolDisplayName: '',
+            configError: false,
+            checkDetails: [],
+            logs: []
         };
         
         const addLog = (m) => {
@@ -1611,51 +2140,74 @@ async function maintainAllDomains(env, isManual = false, config) {
         };
         
         addLog(`🚀 开始维护: ${target.domain}`);
-        const poolKey = domainPoolMapping?.[target.domain] ?? 'pool';
+        // 内联 getPoolKeyForDomain
+        const mappedPoolKey = domainPoolMapping?.[target.domain] ?? POOL_DEFAULT_KEY;
+        const poolKey = isUserPoolKey(mappedPoolKey) ? mappedPoolKey : POOL_DEFAULT_KEY;
+        report.poolKeyUsed = poolKey;
+        report.poolDisplayName = getPoolDisplayName(poolKey, poolNames);
 
-        // 将配额对象传给底层
         if (target.mode === 'A') {
-            await maintainARecords(env, target, addLog, report, poolKey, checkProxyIPCached, config, budget);
+            await maintainARecords(env, target, addLog, report, poolKey, checkProxyIPCached, config);
         } else if (target.mode === 'TXT') {
-            await maintainTXTRecords(env, target, addLog, report, poolKey, checkProxyIPCached, config, budget);
+            await maintainTXTRecords(env, target, addLog, report, poolKey, checkProxyIPCached, config);
         }
         
         addLog(`✅ 完成: ${report.afterActive}/${target.minActive}`);
         allReports.push(report);
     }
 
+    // 更新池统计（无需再次遍历 KV 读取：直接使用维护过程中已知的最终池长度）
     for (const r of allReports) {
         if (r && r.poolKeyUsed && typeof r.poolAfterCount === 'number' && poolStats.has(r.poolKeyUsed)) {
             poolStats.get(r.poolKeyUsed).after = r.poolAfterCount;
         }
     }
 
-    if (poolStats.has('pool_trash')) {
-        const trashRaw = await env.IP_DATA.get('pool_trash') || '';
-        poolStats.get('pool_trash').after = parsePoolList(trashRaw).length;
+    // 重新读取垃圾桶的实际数量（维护过程中 batchAddToTrash 直接写入 KV，不经过 report）
+    if (poolStats.has(POOL_TRASH_KEY)) {
+        const trashRaw = await env.IP_DATA.get(POOL_TRASH_KEY) || '';
+        poolStats.get(POOL_TRASH_KEY).after = parsePoolList(trashRaw).length;
     }
      
-    const hasIPChanges = allReports.some(r => r.added.length > 0 || r.removed.length > 0 || (r.txtAdded && r.txtAdded.length > 0) || (r.txtRemoved && r.txtRemoved.length > 0));
-    const hasConfigError = allReports.some(r => r.configError);
-    const hasInsufficientActive = allReports.some(r => r.afterActive < r.minActive && r.poolExhausted);
+    // 1. 检查是否有IP变化（删除或新增）
+    const hasIPChanges = allReports.some(r => 
+        r.added.length > 0 || 
+        r.removed.length > 0 || 
+        (r.txtAdded && r.txtAdded.length > 0) || 
+        (r.txtRemoved && r.txtRemoved.length > 0)
+    );
     
-    const shouldNotify = isManual || hasIPChanges || hasInsufficientActive || hasConfigError || budget.fetchLeft <= 0;
+    // 2. 检查是否有配置错误
+    const hasConfigError = allReports.some(r => r.configError);
+
+    // 3. 检查是否有域名活跃数不足且无法补充IP
+    // 注：poolExhausted 表示候选IP不足（包括池枯竭、端口不匹配等情况）
+    const hasInsufficientActive = allReports.some(r => 
+        r.afterActive < r.minActive && r.poolExhausted
+    );
+    
+    // 通知条件：手动执行 OR IP变化 OR 活跃数不足 OR 配置错误
+    // 注：移除了 hasPoolExhausted，因为 hasInsufficientActive 已涵盖"无法补充IP"的场景
+    const shouldNotify = isManual || hasIPChanges || hasInsufficientActive || hasConfigError;
 
     let tgResult = { sent: false, reason: 'no_need' };
     if (shouldNotify && config.tgEnabled !== false) {
-        tgResult = await sendTG(allReports, poolStats, isManual, config);
+        tgResult = await sendTG(allReports, poolStats, isManual, { ...config, poolNames });
     } else if (shouldNotify) {
         tgResult = { sent: false, reason: 'disabled', message: 'TG通知已关闭' };
     }
 
-    console.log(`✅ 维护任务完成，总耗时: ${Date.now() - startTime}ms，处理域名: ${allReports.length}个`);
+    console.log(`✅ 维护任务完成，总耗时: ${Date.now() - startTime}ms，处理域名: ${config.targets.length}个`);
     
     return {
-        success: true, reports: allReports, poolStats: Object.fromEntries(poolStats),
-        notified: tgResult.sent, tgStatus: tgResult, processingTime: Date.now() - startTime
+        success: true,
+        reports: allReports,
+        poolStats: Object.fromEntries(poolStats),
+        notified: tgResult.sent,
+        tgStatus: tgResult,
+        processingTime: Date.now() - startTime
     };
 }
-
 
 function formatReportMeta(item = {}) {
     const parts = [];
@@ -1701,6 +2253,7 @@ async function sendTG(reports, poolStats, isManual, config) {
 
     const modeLabel = { 'A': 'A/AAAA', 'TXT': 'TXT' };
     const timestamp = new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
+    const poolNames = config.poolNames || {};
 
     let msg = isManual ? `🔧 <b>DDNS 手动维护报告</b>\n` : `⚙️ <b>DDNS 自动维护报告</b>\n`;
     msg += `━━━━━━━━━━━━━━━━━━\n⏰ ${timestamp}\n\n`;
@@ -1715,7 +2268,8 @@ async function sendTG(reports, poolStats, isManual, config) {
         msg += `━━ <code>${report.domain}</code> ━━\n`;
         msg += `${modeLabel[report.mode]}`;
         if (report.mode === 'A') msg += ` · 端口 ${report.port}`;
-        msg += ` · 最小活跃数 ${report.minActive}\n\n`;
+        msg += ` · 最小活跃数 ${report.minActive}\n`;
+        msg += `📦 使用池: <b>${report.poolDisplayName || getPoolDisplayName(report.poolKeyUsed, poolNames)}</b>\n\n`;
 
         if (report.configError) {
             msg += `❌ <b>配置错误，无法获取记录</b>\n`;
@@ -1744,7 +2298,7 @@ async function sendTG(reports, poolStats, isManual, config) {
     msg += `📦 <b>IP池库存统计</b>\n`;
 
     for (const [poolKey, stats] of poolStats) {
-        const displayName = getPoolDisplayName(poolKey);
+        const displayName = getPoolDisplayName(poolKey, poolNames);
         msg += `\n<b>${displayName}</b>\n`;
         msg += `   维护前: ${stats.before} 个\n`;
         msg += `   维护后: ${stats.after} 个\n`;
@@ -1755,13 +2309,14 @@ async function sendTG(reports, poolStats, isManual, config) {
             msg += `   ${changeSymbol} 变化: ${change > 0 ? '+' : ''}${change}\n`;
         }
 
-        // 垃圾桶/系统数据池不参与枯竭或低库存告警
-        if (poolKey !== 'pool_trash' && poolKey !== 'domain_pool_mapping') {
-            if (stats.after === 0 && stats.before > 0) {
-                msg += `   ⚠️ <b>警告：${displayName}已枯竭！</b>\n`;
-            } else if (stats.after < 10) {
-                msg += `   ⚠️ 库存较低\n`;
-            }
+        if (poolKey === POOL_TRASH_KEY) {
+            continue;
+        }
+
+        if (stats.after === 0 && stats.before > 0) {
+            msg += `   ⚠️ <b>警告：${displayName}已枯竭！</b>\n`;
+        } else if (stats.after < 10) {
+            msg += `   ⚠️ 库存较低\n`;
         }
     }
 
@@ -1807,7 +2362,7 @@ async function sendTG(reports, poolStats, isManual, config) {
 
 function renderHTML(C, runtimeState = {}) {
     const targetsJson = JSON.stringify(C.targets);
-    const settingsJson = JSON.stringify(GLOBAL_SETTINGS);
+    const settingsJson = JSON.stringify(getRuntimeSettings(C));
     const appConfigJson = JSON.stringify(getEditableConfig(C));
     const kvReady = runtimeState.kvReady !== false;
     const version = APP_VERSION;
@@ -2777,7 +3332,7 @@ function renderHTML(C, runtimeState = {}) {
     <div id="usage-guide" class="usage-guide" style="display:none">
         <ol>
             <li><strong>准备IP</strong>：在左侧 <code>IP库管理</code> 中手动输入或远程加载 IP，点击【⚡ 检测清洗】筛出可用 IP。</li>
-            <li><strong>保存到池</strong>：选择上方的 IP 池（默认为通用池），点击【💾 保存到当前池】将可用 IP 入库。</li>
+            <li><strong>保存到池</strong>：选择上方的 IP 池（默认为默认池），点击【💾 保存到当前池】将可用 IP 入库。</li>
             <li><strong>执行维护</strong>：在顶部选择要维护的域名，点击右侧【🔧 执行全部维护】或依靠定时任务自动维护。</li>
         </ol>
     </div>
@@ -2847,7 +3402,7 @@ function renderHTML(C, runtimeState = {}) {
                     <h6 class="m-0 fw-bold">📦 IP库管理</h6>
                     <div class="pool-tools">
                         <select id="pool-selector" class="form-select form-select-sm" onchange="switchPool()">
-                            <option value="pool">通用池</option>
+                            <option value="${POOL_DEFAULT_KEY}">默认池</option>
                         </select>
                         <button class="btn btn-sm" onclick="createNewPool()" title="新建池" style="padding:6px 8px">➕</button>
                         <button class="btn btn-sm" onclick="renameCurrentPool()" title="重命名池" style="padding:6px 8px">✏️</button>
@@ -2859,14 +3414,11 @@ function renderHTML(C, runtimeState = {}) {
                 <!-- 内容区域 - 自动扩展 -->
                 <div class="ip-content-area">
                     <!-- 加载区 -->
-                    <div class="d-flex gap-2 mb-2 align-items-center flex-wrap">
-                        <input type="text" id="remote-url" class="form-control form-control-sm flex-grow-1" placeholder="远程 CSV/TXT 链接" style="border-radius:8px; min-width: 160px;">
-                        <input type="text" id="remote-country" class="form-control form-control-sm" placeholder="国家(如 US,JP)" style="border-radius:8px; width: 100px;">
-                        <input type="text" id="remote-port" class="form-control form-control-sm" placeholder="端口(如 443)" style="border-radius:8px; width: 90px;">
-                        <button class="btn btn-sm btn-outline-primary" onclick="loadRemoteUrl()" style="white-space:nowrap">🌐 极速拉取</button>
-                        <button class="btn btn-sm btn-outline-secondary" onclick="loadCurrentPool()" style="white-space:nowrap">📂 读池</button>
-                        <button class="btn btn-sm btn-outline-danger" onclick="clearInput()" style="white-space:nowrap">🗑️ 清空</button>
-                    
+                    <div class="d-flex gap-2 mb-2 align-items-center">
+                        <input type="text" id="remote-url" class="form-control form-control-sm flex-grow-1" placeholder="远程TXT URL" style="border-radius:8px">
+                        <button class="btn btn-sm btn-outline-primary" onclick="loadRemoteUrl()" style="white-space:nowrap" title="从远程URL加载">🌐 加载</button>
+                        <button class="btn btn-sm btn-outline-secondary" onclick="loadCurrentPool()" title="加载当前池到输入框" style="white-space:nowrap">📂 从库</button>
+                        <button class="btn btn-sm btn-outline-danger" onclick="clearInput()" title="清空输入框" style="white-space:nowrap">🗑️ 清空</button>
                     </div>
                     
                     <!-- 输入区 -->
@@ -2892,12 +3444,11 @@ function renderHTML(C, runtimeState = {}) {
                 <!-- 底部按钮区域 - 固定在底部 -->
                 <div class="ip-actions-area mt-auto">
                     <!-- 主操作按钮 -->
-                                        <div class="d-flex gap-2 flex-wrap" id="main-actions">
-                        <button id="btn-check" class="btn btn-primary flex-grow-1" onclick="batchCheck()" style="border-radius:10px">⚡ 测速清洗</button>
-                        <button class="btn btn-info flex-grow-1" onclick="saveByCountry()" style="border-radius:10px; color:white;">🗂️ 一键按国分发</button>
-                        <button class="btn btn-success" onclick="saveToCurrentPool('append')" style="border-radius:10px">💾 入库当前池</button>
+                    <div class="d-flex gap-2" id="main-actions">
+                        <button id="btn-check" class="btn btn-primary flex-grow-1" onclick="batchCheck()" style="border-radius:10px">⚡ 检测</button>
+                        <button class="btn btn-success flex-grow-1" onclick="saveToCurrentPool('append')" style="border-radius:10px">💾 入库</button>
+                        <button class="btn btn-outline-secondary btn-sm" onclick="removeFromPool()" title="从库中移除输入框中的IP" style="border-radius:8px">从库中移除</button>
                     </div>
-
                     
                     <!-- 垃圾桶专用操作 -->
                     <div id="trash-actions" style="display:none" class="mt-2">
@@ -2980,6 +3531,12 @@ function renderHTML(C, runtimeState = {}) {
                 <label class="field"><span>面板密钥</span><small>为空则关闭前端鉴权。</small><input id="cfg-auth-key" class="form-control form-control-sm" placeholder="AUTH_KEY"></label>
                 <label class="field"><span>TG Bot Token</span><small>开启 TG 通知时必填。</small><input id="cfg-tg-token" class="form-control form-control-sm" placeholder="TG_TOKEN"></label>
                 <label class="field"><span>TG Chat ID</span><small>通知接收账号或群组 ID。</small><input id="cfg-tg-id" class="form-control form-control-sm" placeholder="TG_ID"></label>
+                <label class="field"><span>检测并发</span><small>前端批量检测并发数。</small><input id="cfg-concurrent-checks" type="number" min="1" max="128" class="form-control form-control-sm" placeholder="32"></label>
+                <label class="field"><span>检测超时(ms)</span><small>单次 ProxyIP 检测。</small><input id="cfg-check-timeout" type="number" min="500" max="30000" class="form-control form-control-sm" placeholder="3000"></label>
+                <label class="field"><span>远程加载超时(ms)</span><small>远程 TXT URL 加载。</small><input id="cfg-remote-timeout" type="number" min="1000" max="60000" class="form-control form-control-sm" placeholder="5000"></label>
+                <label class="field"><span>DoH超时(ms)</span><small>DNS over HTTPS 查询。</small><input id="cfg-doh-timeout" type="number" min="1000" max="30000" class="form-control form-control-sm" placeholder="5000"></label>
+                <label class="field"><span>默认活跃数</span><small>新增管理域名默认值。</small><input id="cfg-default-min-active" type="number" min="0" max="100" class="form-control form-control-sm" placeholder="3"></label>
+                <label class="field"><span>垃圾桶上限</span><small>超过后保留最新条目。</small><input id="cfg-max-trash-size" type="number" min="0" max="100000" class="form-control form-control-sm" placeholder="1000"></label>
             </div>
         </div>
 
@@ -3007,15 +3564,17 @@ function renderHTML(C, runtimeState = {}) {
 <script>
     // ===== Client state =====
     const TARGETS = ${targetsJson};
-    const SETTINGS = ${settingsJson};
+    let SETTINGS = ${settingsJson};
     const INITIAL_APP_CONFIG = ${appConfigJson};
     const AUTH_ENABLED = ${C.authKey ? 'true' : 'false'};
     const MODE_LABELS = {'A': 'A/AAAA', 'TXT': 'TXT'};
     let currentTargetIndex = 0;
-    let currentPool = 'pool';
+    const POOL_DEFAULT_KEY = '${POOL_DEFAULT_KEY}';
+    const POOL_TRASH_KEY = '${POOL_TRASH_KEY}';
+    let currentPool = POOL_DEFAULT_KEY;
     let abortController = null;
     let domainPoolMapping = {};
-    let availablePools = ['pool'];
+    let availablePools = [POOL_DEFAULT_KEY];
     let poolDisplayNames = {};
     let toastTimer = null;
     let configDraft = null;
@@ -3061,8 +3620,42 @@ function renderHTML(C, runtimeState = {}) {
     }
     
     // 池名显示（统一格式）
-    const POOL_NAMES = { pool: '通用池', pool_trash: '🗑️ 垃圾桶', domain_pool_mapping: '系统数据' };
-    function getPoolName(key) { return poolDisplayNames[key] || POOL_NAMES[key] || key.replace('pool_', '') + '池'; }
+    const POOL_NAMES = { [POOL_DEFAULT_KEY]: '默认池', [POOL_TRASH_KEY]: '🗑️ 垃圾桶' };
+    const NUMBERED_POOL_KEY_RE = /^ip_pool_(\\d{3})$/;
+    function getPoolName(key) {
+        if (poolDisplayNames[key]) return poolDisplayNames[key];
+        if (POOL_NAMES[key]) return POOL_NAMES[key];
+        const numbered = NUMBERED_POOL_KEY_RE.exec(key || '');
+        if (numbered) return \`池 \${numbered[1]}\`;
+        return String(key || '').replace(/^ip_pool_/, '池 ');
+    }
+    function getPoolFixedName(key) {
+        if (POOL_NAMES[key]) return POOL_NAMES[key];
+        const numbered = NUMBERED_POOL_KEY_RE.exec(key || '');
+        if (numbered) return \`池 \${numbered[1]}\`;
+        return getPoolName(key);
+    }
+    function comparePoolKeys(a, b) {
+        const order = key => key === POOL_DEFAULT_KEY ? 0 : (key === POOL_TRASH_KEY ? 1 : 2);
+        const oa = order(a);
+        const ob = order(b);
+        if (oa !== ob) return oa - ob;
+        const na = NUMBERED_POOL_KEY_RE.exec(a || '');
+        const nb = NUMBERED_POOL_KEY_RE.exec(b || '');
+        if (na && nb) return Number(na[1]) - Number(nb[1]);
+        if (na) return -1;
+        if (nb) return 1;
+        return String(a || '').localeCompare(String(b || ''), 'zh-CN', { numeric: true });
+    }
+
+    function applyPoolState(state = {}) {
+        domainPoolMapping = state.mapping && typeof state.mapping === 'object' && !Array.isArray(state.mapping) ? state.mapping : {};
+        availablePools = Array.isArray(state.pools) && state.pools.length ? state.pools : [POOL_DEFAULT_KEY, POOL_TRASH_KEY];
+        poolDisplayNames = state.poolNames && typeof state.poolNames === 'object' && !Array.isArray(state.poolNames) ? state.poolNames : {};
+        if (!availablePools.includes(currentPool)) currentPool = POOL_DEFAULT_KEY;
+        updatePoolSelector();
+        updateDomainBindingTable();
+    }
     
     // ===== Form / toast / navigation helpers =====
     function setInputValue(id, value) {
@@ -3073,6 +3666,11 @@ function renderHTML(C, runtimeState = {}) {
     function getInputValue(id) {
         const el = document.getElementById(id);
         return el ? el.value.trim() : '';
+    }
+
+    function getNumberInputValue(id, fallback) {
+        const value = parseInt(getInputValue(id), 10);
+        return Number.isFinite(value) ? value : fallback;
     }
 
     function showToast(message, type = 'success') {
@@ -3141,7 +3739,7 @@ function renderHTML(C, runtimeState = {}) {
     }
 
     function bindConfigGlobalChangeHandlers() {
-        ['cfg-scheduled-enabled', 'cfg-tg-enabled', 'cfg-check-api', 'cfg-check-api-backup', 'cfg-doh-api', 'cfg-auth-key', 'cfg-tg-token', 'cfg-tg-id'].forEach(id => {
+        ['cfg-scheduled-enabled', 'cfg-tg-enabled', 'cfg-check-api', 'cfg-check-api-backup', 'cfg-doh-api', 'cfg-auth-key', 'cfg-tg-token', 'cfg-tg-id', 'cfg-concurrent-checks', 'cfg-check-timeout', 'cfg-remote-timeout', 'cfg-doh-timeout', 'cfg-default-min-active', 'cfg-max-trash-size'].forEach(id => {
             const el = document.getElementById(id);
             if (!el || el.dataset.dirtyBound) return;
             el.dataset.dirtyBound = '1';
@@ -3260,7 +3858,7 @@ function renderHTML(C, runtimeState = {}) {
             <div class="config-edit-grid">
                 <label class="field"><span>配置</span><small>自动编号。</small><input id="edit-zone-name" class="form-control form-control-sm" value="\${escapeHTML(zone.name || ('配置' + number))}" readonly></label>
                 <label class="field"><span>别名</span><small>卡片显示名称。</small><input id="edit-zone-label" class="form-control form-control-sm" value="\${escapeHTML(zone.label || zone.baseDomain || ('配置' + number))}" placeholder="配置\${number}"></label>
-                <label class="field"><span>维护根域</span><small>例如 dwb.cc.cd。</small><input id="edit-zone-base" class="form-control form-control-sm" value="\${escapeHTML(zone.baseDomain || '')}" placeholder="dwb.cc.cd"></label>
+                <label class="field"><span>目标维护域名</span><small>目前只支持托管在cf的域名</small><input id="edit-zone-base" class="form-control form-control-sm" value="\${escapeHTML(zone.baseDomain || '')}" placeholder="example.com"></label>
                 <label class="field"><span>Zone ID</span><small>Cloudflare 区域 ID。</small><input id="edit-zone-id" class="form-control form-control-sm" value="\${escapeHTML(zone.zoneId || '')}" placeholder="Zone ID"></label>
                 <label class="field span-2"><span>CF Key</span><small>需要 DNS 编辑权限。</small><input id="edit-zone-key" class="form-control form-control-sm" value="\${escapeHTML(zone.apiKey || '')}" placeholder="CF API Token"></label>
             </div>
@@ -3327,7 +3925,7 @@ function renderHTML(C, runtimeState = {}) {
         const enabled = target.enabled !== false;
         return \`
             <div class="config-mini-card" onclick="editTargetConfig(\${index})">
-                <h5>\${escapeHTML(domain || '未生成域名')}</h5>
+                <h5>\${escapeHTML(domain || '等待生成')}</h5>
                 <div class="meta"><span>\${escapeHTML(meta)}</span><span>\${escapeHTML(exitLabel)}</span><span>\${escapeHTML(getZoneDisplayName(target.zoneIndex || 0))}</span><span>\${enabled ? '维护开启' : '维护关闭'}</span></div>
                 <div class="meta"><span>活跃数 \${escapeHTML(String(target.minActive ?? 3))}</span>\${filters ? '<span>' + escapeHTML(filters) + '</span>' : ''}</div>
                 <div class="actions" onclick="event.stopPropagation()">
@@ -3344,7 +3942,7 @@ function renderHTML(C, runtimeState = {}) {
 
     function addTargetConfigRow() {
         if (!ensureConfigEditable()) return;
-        showTargetEditor((configDraft?.targets || []).length, { mode: 'A', zoneIndex: 0, prefix: '', port: '443', minActive: 3 });
+        showTargetEditor((configDraft?.targets || []).length, { mode: 'A', zoneIndex: 0, prefix: '', port: '443', minActive: (configDraft?.settings?.DEFAULT_MIN_ACTIVE ?? SETTINGS.DEFAULT_MIN_ACTIVE) });
     }
 
     function loadAppConfigToForm(config) {
@@ -3355,6 +3953,13 @@ function renderHTML(C, runtimeState = {}) {
         setInputValue('cfg-auth-key', config.authKey);
         setInputValue('cfg-tg-token', config.tgToken);
         setInputValue('cfg-tg-id', config.tgId);
+        const settings = config.settings || SETTINGS;
+        setInputValue('cfg-concurrent-checks', settings.CONCURRENT_CHECKS ?? SETTINGS.CONCURRENT_CHECKS);
+        setInputValue('cfg-check-timeout', settings.CHECK_TIMEOUT ?? SETTINGS.CHECK_TIMEOUT);
+        setInputValue('cfg-remote-timeout', settings.REMOTE_LOAD_TIMEOUT ?? SETTINGS.REMOTE_LOAD_TIMEOUT);
+        setInputValue('cfg-doh-timeout', settings.DOH_TIMEOUT ?? SETTINGS.DOH_TIMEOUT);
+        setInputValue('cfg-default-min-active', settings.DEFAULT_MIN_ACTIVE ?? SETTINGS.DEFAULT_MIN_ACTIVE);
+        setInputValue('cfg-max-trash-size', settings.MAX_TRASH_SIZE ?? SETTINGS.MAX_TRASH_SIZE);
         const scheduledToggle = document.getElementById('cfg-scheduled-enabled');
         const tgToggle = document.getElementById('cfg-tg-enabled');
         if (scheduledToggle) scheduledToggle.checked = config.scheduledEnabled !== false;
@@ -3383,19 +3988,20 @@ function renderHTML(C, runtimeState = {}) {
         const mode = target.mode === 'TXT' ? 'TXT' : 'A';
         const modeOptions = ['A', 'TXT'].map(value => \`<option value="\${value}" \${mode === value ? 'selected' : ''}>\${MODE_LABELS[value]}</option>\`).join('');
         const exit = target.exitFilter || 'any';
+        const portValue = mode === 'TXT' ? '任意' : (target.port || '443');
+        const previousAPort = mode === 'TXT' && target.port && target.port !== 'any' ? target.port : '443';
         panel.classList.add('active');
         panel.innerHTML = \`
             <h6 class="mb-3 fw-bold">\${index >= (configDraft?.targets || []).length ? '添加' : '编辑'}管理域名</h6>
             <div class="config-edit-grid">
-                <label class="field"><span>权限配置</span><small>选择配置1/2/3。</small><select id="edit-target-zone" class="form-select form-select-sm" onchange="updateTargetEditorPreview()">\${getZoneOptionsHtml(target.zoneIndex ?? 0)}</select></label>
-                <label class="field"><span>维护类型</span><small>A/AAAA 或 TXT。</small><select id="edit-target-mode" class="form-select form-select-sm" onchange="updateTargetEditorPreview()">\${modeOptions}</select></label>
+                <label class="field"><span>权限配置</span><small>选择配置1/2/3。</small><select id="edit-target-zone" class="form-select form-select-sm">\${getZoneOptionsHtml(target.zoneIndex ?? 0)}</select></label>
+                <label class="field"><span>维护类型</span><small>A/AAAA 或 TXT。</small><select id="edit-target-mode" class="form-select form-select-sm" onchange="handleTargetModeChange()">\${modeOptions}</select></label>
                 <label class="field"><span>出口类型</span><small>由检测 API 实时判断。</small><select id="edit-target-exit" class="form-select form-select-sm"><option value="any" \${exit === 'any' ? 'selected' : ''}>任意</option><option value="v4" \${exit === 'v4' ? 'selected' : ''}>IPv4</option><option value="v6" \${exit === 'v6' ? 'selected' : ''}>IPv6</option><option value="dual" \${exit === 'dual' ? 'selected' : ''}>IPv4 & IPv6</option></select></label>
-                <label class="field"><span>域名前缀</span><small>留空表示根域。</small><input id="edit-target-prefix" class="form-control form-control-sm" value="\${escapeHTML(target.prefix || '')}" placeholder="kr" oninput="updateTargetEditorPreview()"></label>
-                <label class="field"><span>端口</span><small>A/AAAA 模式显示。</small><input id="edit-target-port" class="form-control form-control-sm" value="\${escapeHTML(target.port || '443')}" placeholder="443"></label>
+                <label class="field"><span>域名前缀</span><small>留空表示根域。</small><input id="edit-target-prefix" class="form-control form-control-sm" value="\${escapeHTML(target.prefix || '')}" placeholder="kr"></label>
+                <label class="field"><span>端口</span><small id="edit-target-port-hint">A/AAAA 模式使用，TXT 为任意。</small><input id="edit-target-port" class="form-control form-control-sm" value="\${escapeHTML(portValue)}" data-a-port="\${escapeHTML(previousAPort)}" placeholder="443"></label>
                 <label class="field"><span>活跃数</span><small>最小可用数量。</small><input id="edit-target-min" type="number" min="0" class="form-control form-control-sm" value="\${escapeHTML(String(target.minActive ?? 3))}" placeholder="3"></label>
                 <label class="field"><span>国家</span><small>可选，例如 KR。</small><input id="edit-target-country" class="form-control form-control-sm" value="\${escapeHTML(target.country || '')}" placeholder="KR"></label>
                 <label class="field"><span>ASN</span><small>可选，例如 AS4766。</small><input id="edit-target-asn" class="form-control form-control-sm" value="\${escapeHTML(target.asn || '')}" placeholder="AS4766"></label>
-                <label class="field"><span>完整域名</span><small>自动生成，点击可复制。</small><code id="edit-target-preview" class="copyable" onclick="copyText(this.textContent, '域名')"></code></label>
             </div>
             <input type="hidden" id="edit-target-enabled" value="\${target.enabled !== false ? 'true' : 'false'}">
             <div class="config-edit-actions">
@@ -3403,16 +4009,45 @@ function renderHTML(C, runtimeState = {}) {
                 <button class="btn btn-primary btn-sm" onclick="commitTargetEditor(\${index})">保存到页面</button>
             </div>
         \`;
-        updateTargetEditorPreview();
+        syncTargetPortMode();
         panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+
+    function syncTargetPortMode() {
+        const mode = getInputValue('edit-target-mode') === 'TXT' ? 'TXT' : 'A';
+        const portInput = document.getElementById('edit-target-port');
+        const hint = document.getElementById('edit-target-port-hint');
+        if (!portInput) return;
+        if (mode === 'TXT') {
+            if (!portInput.dataset.aPort || portInput.value !== '任意') {
+                portInput.dataset.aPort = (portInput.value && portInput.value !== '任意') ? portInput.value : (portInput.dataset.aPort || '443');
+            }
+            portInput.value = '任意';
+            portInput.disabled = true;
+            if (hint) hint.textContent = 'TXT 模式不限制端口。';
+        } else {
+            portInput.disabled = false;
+            portInput.value = portInput.dataset.aPort || (portInput.value === '任意' ? '443' : portInput.value) || '443';
+            if (hint) hint.textContent = 'A/AAAA 模式使用。';
+        }
+    }
+
+    function handleTargetModeChange() {
+        const portInput = document.getElementById('edit-target-port');
+        if (portInput && !portInput.disabled && portInput.value && portInput.value !== '任意') {
+            portInput.dataset.aPort = portInput.value;
+        }
+        syncTargetPortMode();
     }
 
     function getTargetEditorValue() {
         const zoneIndex = parseInt(getInputValue('edit-target-zone') || '0', 10) || 0;
         const prefix = getInputValue('edit-target-prefix').replace(/^\\.+|\\.+$/g, '');
-        const port = getInputValue('edit-target-port') || '443';
-        const minActive = parseInt(getInputValue('edit-target-min') || '3', 10) || 3;
         const mode = getInputValue('edit-target-mode') === 'TXT' ? 'TXT' : 'A';
+        const portInput = document.getElementById('edit-target-port');
+        const port = mode === 'TXT' ? 'any' : ((portInput?.value || '').trim() || '443');
+        const parsedMinActive = parseInt(getInputValue('edit-target-min'), 10);
+        const minActive = Number.isFinite(parsedMinActive) ? Math.max(0, parsedMinActive) : (configDraft?.settings?.DEFAULT_MIN_ACTIVE ?? SETTINGS.DEFAULT_MIN_ACTIVE);
         const target = {
             mode,
             zoneIndex,
@@ -3428,16 +4063,10 @@ function renderHTML(C, runtimeState = {}) {
         return target;
     }
 
-    function updateTargetEditorPreview() {
-        const preview = document.getElementById('edit-target-preview');
-        if (!preview) return;
-        preview.textContent = computeDomainFromTarget(getTargetEditorValue()) || '未生成域名';
-    }
-
     function commitTargetEditor(index) {
         if (!ensureConfigEditable()) return;
         const target = getTargetEditorValue();
-        if (!target.domain || target.domain === '未生成域名') {
+        if (!target.domain) {
             showToast('请先填写权限配置和域名前缀', 'error');
             return;
         }
@@ -3483,6 +4112,14 @@ function renderHTML(C, runtimeState = {}) {
             tgId: getInputValue('cfg-tg-id'),
             scheduledEnabled: scheduledToggle ? scheduledToggle.checked : true,
             tgEnabled: tgToggle ? tgToggle.checked : true,
+            settings: {
+                CONCURRENT_CHECKS: getNumberInputValue('cfg-concurrent-checks', SETTINGS.CONCURRENT_CHECKS),
+                CHECK_TIMEOUT: getNumberInputValue('cfg-check-timeout', SETTINGS.CHECK_TIMEOUT),
+                REMOTE_LOAD_TIMEOUT: getNumberInputValue('cfg-remote-timeout', SETTINGS.REMOTE_LOAD_TIMEOUT),
+                DOH_TIMEOUT: getNumberInputValue('cfg-doh-timeout', SETTINGS.DOH_TIMEOUT),
+                DEFAULT_MIN_ACTIVE: getNumberInputValue('cfg-default-min-active', SETTINGS.DEFAULT_MIN_ACTIVE),
+                MAX_TRASH_SIZE: getNumberInputValue('cfg-max-trash-size', SETTINGS.MAX_TRASH_SIZE)
+            },
             targets: collectTargetConfigRows()
         };
         try {
@@ -3500,7 +4137,8 @@ function renderHTML(C, runtimeState = {}) {
                 showToast(r.error || '配置保存失败', 'error');
                 return;
             }
-            configDraft = cloneConfig(config);
+            configDraft = cloneConfig(r.config || config);
+            SETTINGS = configDraft.settings || SETTINGS;
             clearConfigDirty();
             setConfigEditMode(false);
             log('✅ 配置已保存到 KV，刷新页面后生效', 'success');
@@ -3685,7 +4323,6 @@ function renderHTML(C, runtimeState = {}) {
             address: fields[0] || '',
             asn: formatAsn(fields[1]) || 'null',
             country: fields[2] || 'null',
-            stack: fields[3] || 'null',
             comment: raw.includes('#') ? raw.slice(raw.indexOf('#') + 1).trim() : ''
         };
     }
@@ -3748,77 +4385,31 @@ function renderHTML(C, runtimeState = {}) {
     }
     
     // ===== Pool editor actions =====
-            async function loadRemoteUrl() {
+    async function loadRemoteUrl() {
         const url = document.getElementById('remote-url').value.trim();
-        const countries = document.getElementById('remote-country').value.trim();
-        const ports = document.getElementById('remote-port').value.trim();
+        if (!url) {
+            log('❌ 请输入URL', 'error');
+            return;
+        }
         
-        if (!url) { log('❌ 请输入URL', 'error'); return; }
-        
-        log('🌐 极速拉取并执行边缘过滤...', 'warn');
+        log(\`🌐 加载: \${url}\`, 'warn');
         try {
             const r = await apiFetch('/api/load-remote-url', {
-                method: 'POST', body: JSON.stringify({ url, countries, ports })
+                method: 'POST',
+                body: JSON.stringify({ url })
             }).then(r => r.json());
             
             if (r.success) {
                 document.getElementById('ip-input').value = r.ips || '';
                 updateFilterPreview();
-                log('✅ 拉取成功: 解析并提纯出 ' + r.count + ' 个符合条件的节点', 'success');
-            } else { log('❌ 拉取失败: ' + r.error, 'error'); }
-        } catch (e) { log('❌ 网络请求出错', 'error'); }
+                log(\`✅ 成功: \${r.count} 个\`, 'success');
+            } else {
+                log(\`❌ 失败\`, 'error');
+            }
+        } catch (e) {
+            log(\`❌ 出错\`, 'error');
+        }
     }
-
-    async function saveByCountry() {
-        const content = document.getElementById('ip-input').value;
-        // 修复：必须使用双斜杠转义 \\n
-        const lines = content.split('\\n').filter(l => l.trim());
-        if (lines.length === 0) { log('❌ 内容为空，请先极速拉取或手动输入数据', 'error'); return; }
-        if (!confirm('将根据节点的国家自动并发分发到不同的专属 IP 池中，确认执行？')) return;
-
-        log('🗂️ 正在执行全自动按国家分发入库...', 'warn');
-        
-        const groups = {};
-        lines.forEach(line => {
-            const parsed = parsePoolLine(line);
-            // 修复：必须使用双斜杠转义正则的 \\s 和 \\/
-            let country = parsed.country && parsed.country !== 'null' ? parsed.country.split(/[\\/,\\s]+/)[0] : 'UNKNOWN';
-            country = country.replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
-            if (!country) country = 'UNKNOWN';
-            
-            const poolKey = 'pool_' + country;
-            if (!groups[poolKey]) groups[poolKey] = [];
-            groups[poolKey].push(line);
-        });
-
-        const poolKeys = Object.keys(groups);
-        log('📊 共识别出 ' + poolKeys.length + ' 个地区: ' + poolKeys.map(k => k.replace('pool_', '')).join(', '), 'info');
-
-        try {
-            let totalAdded = 0;
-            const promises = Object.entries(groups).map(async ([poolKey, ipLines]) => {
-                const r = await apiFetch('/api/save-pool', {
-                    // 修复：必须使用双斜杠转义 \\n
-                    method: 'POST', body: JSON.stringify({ pool: ipLines.join('\\n'), poolKey: poolKey, mode: 'append' })
-                }).then(r => r.json());
-                
-                if (r.success) {
-                    totalAdded += r.added || 0;
-                    log('  ✅ [' + poolKey.replace('pool_', '') + '池] 入库 ' + ipLines.length + ' 个 (新增 ' + r.added + ')', 'success');
-                } else { log('  ❌ [' + poolKey.replace('pool_', '') + '池] 入库失败: ' + r.error, 'error'); }
-            });
-
-            await Promise.all(promises);
-
-            log('🎉 智能分发入库完成！总计新增 ' + totalAdded + ' 个 IP。', 'success');
-            document.getElementById('ip-input').value = '';
-            updateFilterPreview();
-            await loadDomainPoolMapping(); 
-        } catch (e) { log('❌ 分发入库遇到错误: ' + e.message, 'error'); }
-    }
-
-
-
     
     async function loadCurrentPool() {
         log(\`📂 加载 \${currentPool}...\`, 'info');
@@ -3906,7 +4497,7 @@ function renderHTML(C, runtimeState = {}) {
         }
     }
     
-    async function batchCheck(useBackupApi = false) {
+    async function batchCheck() {
         const btn = document.getElementById('btn-check');
         const input = document.getElementById('ip-input');
         const lines = input.value.split('\\n').filter(i => i.trim());
@@ -3999,7 +4590,7 @@ function renderHTML(C, runtimeState = {}) {
                     // 检测所有目标IP
                     for (const checkTarget of checkTargets) {
                         try {
-                            const checkUrl = \`/api/check-ip?ip=\${encodeURIComponent(checkTarget)}\${useBackupApi ? '&useBackup=true' : ''}\`;
+                            const checkUrl = \`/api/check-ip?ip=\${encodeURIComponent(checkTarget)}\`;
                             const r = await apiFetch(checkUrl, {
                                 signal: signal
                             }).then(r => r.json());
@@ -4118,7 +4709,7 @@ function renderHTML(C, runtimeState = {}) {
         pausedCheckState = null;
 
         // 继续检测
-        return await batchCheck(cleaningPool === 'pool_trash');
+        return await batchCheck();
     }
     
     // 放弃检测
@@ -4437,12 +5028,7 @@ function renderHTML(C, runtimeState = {}) {
     async function loadDomainPoolMapping() {
         try {
             const r = await apiFetch('/api/get-domain-pool-mapping').then(r => r.json());
-            domainPoolMapping = r.mapping || {};
-            availablePools = r.pools || ['pool'];
-            poolDisplayNames = r.poolNames || {};
-            
-            updatePoolSelector();
-            updateDomainBindingTable();
+            applyPoolState(r);
             log('✅ 已加载池配置', 'success');
         } catch (e) {
             log('❌ 加载配置失败', 'error');
@@ -4451,29 +5037,17 @@ function renderHTML(C, runtimeState = {}) {
     
     function updatePoolSelector() {
         const selector = document.getElementById('pool-selector');
-        
-        const pools = ['pool'];
-        const hasTrash = availablePools.includes('pool_trash');
-        if (hasTrash) {
-            pools.push('pool_trash');
-        }
-        
-        availablePools.forEach(p => {
-            if (p !== 'pool' && p !== 'pool_trash' && p !== 'domain_pool_mapping' && p !== 'pool_display_names') {
-                pools.push(p);
-            }
-        });
-        
-        if (!hasTrash) {
-            pools.splice(1, 0, 'pool_trash');
-        }
-        
+        if (!selector) return;
+        const pools = [...new Set([POOL_DEFAULT_KEY, POOL_TRASH_KEY, ...(Array.isArray(availablePools) ? availablePools : [])])]
+            .sort(comparePoolKeys);
+
         selector.innerHTML = pools.map(pool => \`<option value="\${escapeHTML(pool)}">\${escapeHTML(getPoolName(pool))}</option>\`).join('');
         selector.value = currentPool;
     }
     
     function updateDomainBindingTable() {
         const tbody = document.getElementById('domain-binding-list');
+        if (!tbody) return;
         const domains = TARGETS.map(t => t.domain);
         if (domains.length === 0) {
             tbody.innerHTML = '<tr><td colspan="2" class="text-center text-secondary">请先到配置中心添加管理域名</td></tr>';
@@ -4481,11 +5055,10 @@ function renderHTML(C, runtimeState = {}) {
         }
         
         tbody.innerHTML = domains.map(domain => {
-            const boundPool = domainPoolMapping[domain] || 'pool';
+            const boundPool = domainPoolMapping[domain] || POOL_DEFAULT_KEY;
             
-            const selectablePools = availablePools.filter(p => 
-                p !== 'pool_trash' && p !== 'domain_pool_mapping' && p !== 'pool_display_names'
-            );
+            const selectablePools = (Array.isArray(availablePools) ? availablePools : [POOL_DEFAULT_KEY])
+                .filter(p => p !== POOL_TRASH_KEY);
             
             const options = selectablePools.map(pool => {
                 const selected = pool === boundPool ? 'selected' : '';
@@ -4507,39 +5080,25 @@ function renderHTML(C, runtimeState = {}) {
     }
     
     async function createNewPool() {
-        const name = prompt('输入池名称 (支持中文、字母、数字、下划线、横杠)');
+        const name = prompt('输入池显示名称');
         if (!name) return;
+        const displayName = name.trim();
         
-        // 放宽限制：支持中文
-        if (!/^[\u4e00-\u9fa5a-zA-Z0-9_-]+$/.test(name)) {
-            alert('池名称只能包含中文、字母、数字、下划线、横杠!');
-            return;
-        }
-        
-        if (name.length > 40) {
-            alert('池名称不能超过40个字符!');
-            return;
-        }
-        
-        const poolKey = \`pool_\${name}\`;
-        
-        if (availablePools.includes(poolKey)) {
-            alert('池已存在!');
+        if (!displayName) {
+            alert('显示名称不能为空!');
             return;
         }
         
         try {
             const r = await apiFetch('/api/create-pool', {
                 method: 'POST',
-                body: JSON.stringify({ name })
+                body: JSON.stringify({ displayName })
             }).then(r => r.json());
             
             if (r.success) {
-                const createdPoolKey = r.poolKey || poolKey;
-                if (!availablePools.includes(createdPoolKey)) availablePools.push(createdPoolKey);
+                const createdPoolKey = r.poolKey;
                 currentPool = createdPoolKey;
-                updatePoolSelector();
-                updateDomainBindingTable();
+                applyPoolState(r);
                 log(\`✅ 已创建池: \${getPoolName(createdPoolKey)}\`, 'success');
             } else {
                 alert(r.error || '创建失败');
@@ -4550,7 +5109,7 @@ function renderHTML(C, runtimeState = {}) {
     }
 
     async function renameCurrentPool() {
-        if (currentPool === 'pool_trash' || currentPool === 'domain_pool_mapping') {
+        if (currentPool === POOL_TRASH_KEY) {
             alert(\`不能重命名\${getPoolName(currentPool)}!\`);
             return;
         }
@@ -4560,12 +5119,8 @@ function renderHTML(C, runtimeState = {}) {
         if (!name) return;
         const displayName = name.trim();
 
-        if (!/^[\u4e00-\u9fa5a-zA-Z0-9_\\-\\s]+$/.test(displayName)) {
-            alert('显示名称只能包含中文、字母、数字、空格、下划线、横杠!');
-            return;
-        }
-        if (displayName.length > 40) {
-            alert('显示名称不能超过40个字符!');
+        if (!displayName) {
+            alert('显示名称不能为空!');
             return;
         }
 
@@ -4580,9 +5135,7 @@ function renderHTML(C, runtimeState = {}) {
                 return;
             }
 
-            poolDisplayNames = r.poolNames || { ...poolDisplayNames, [currentPool]: displayName };
-            updatePoolSelector();
-            updateDomainBindingTable();
+            applyPoolState(r);
             log(\`✅ 已重命名为: \${displayName}\`, 'success');
             showToast('池名称已更新');
         } catch (e) {
@@ -4591,13 +5144,24 @@ function renderHTML(C, runtimeState = {}) {
     }
     
     async function deleteCurrentPool() {
-        const protectedPools = ['pool', 'pool_trash', 'domain_pool_mapping'];
+        const protectedPools = [POOL_DEFAULT_KEY, POOL_TRASH_KEY];
         if (protectedPools.includes(currentPool)) {
             alert(\`不能删除\${getPoolName(currentPool)}!\`);
             return;
         }
         
-        if (!confirm(\`确认删除 \${currentPool}?\`)) return;
+        const boundDomains = Object.entries(domainPoolMapping)
+            .filter(([, poolKey]) => poolKey === currentPool)
+            .map(([domain]) => domain);
+        const confirmLines = [
+            \`确认删除 \${getPoolFixedName(currentPool)}（\${getPoolName(currentPool)}）？\`
+        ];
+        if (boundDomains.length) {
+            confirmLines.push('', \`当前有 \${boundDomains.length} 个管理域名绑定到该池，删除后会自动改回默认池。\`);
+            confirmLines.push(...boundDomains.slice(0, 5).map(domain => \`- \${domain}\`));
+            if (boundDomains.length > 5) confirmLines.push(\`...还有 \${boundDomains.length - 5} 个\`);
+        }
+        if (!confirm(confirmLines.join('\\n'))) return;
         
         try {
             const r = await apiFetch(\`/api/delete-pool?poolKey=\${currentPool}\`, {
@@ -4609,10 +5173,8 @@ function renderHTML(C, runtimeState = {}) {
                 return;
             }
             
-            availablePools = availablePools.filter(p => p !== currentPool);
-            currentPool = 'pool';
-            updatePoolSelector();
-            updateDomainBindingTable();
+            currentPool = POOL_DEFAULT_KEY;
+            applyPoolState(r);
             log(\`✅ 已删除池\`, 'success');
         } catch (e) {
             log('❌ 删除失败', 'error');
@@ -4625,7 +5187,7 @@ function renderHTML(C, runtimeState = {}) {
         
         const trashActions = document.getElementById('trash-actions');
         if (trashActions) {
-            if (currentPool === 'pool_trash') {
+            if (currentPool === POOL_TRASH_KEY) {
                 trashActions.style.display = 'block';
             } else {
                 trashActions.style.display = 'none';
@@ -4636,16 +5198,41 @@ function renderHTML(C, runtimeState = {}) {
     }
     
     async function bindDomainToPool(domain, poolKey) {
+        const oldPool = domainPoolMapping[domain] || POOL_DEFAULT_KEY;
+        if (oldPool === poolKey) return;
+        const oldName = getPoolName(oldPool);
+        const newName = getPoolName(poolKey);
+        const message = [
+            \`确认切换 \${domain} 的绑定池？\`,
+            \`\`,
+            \`当前：\${oldName}（\${getPoolFixedName(oldPool)}）\`,
+            \`切换到：\${newName}（\${getPoolFixedName(poolKey)}）\`,
+            \`\`,
+            \`切换后下一次维护会从新池补充 IP。\`
+        ].join('\\n');
+        if (!confirm(message)) {
+            updateDomainBindingTable();
+            return;
+        }
         domainPoolMapping[domain] = poolKey;
         
         try {
-            await apiFetch('/api/save-domain-pool-mapping', {
+            const r = await apiFetch('/api/save-domain-pool-mapping', {
                 method: 'POST',
                 body: JSON.stringify({ mapping: domainPoolMapping })
-            });
+            }).then(r => r.json());
+            if (!r.success) {
+                domainPoolMapping[domain] = oldPool;
+                updateDomainBindingTable();
+                log(\`❌ 绑定失败: \${r.error || '未知错误'}\`, 'error');
+                return;
+            }
+            applyPoolState(r);
             
             log(\`✅ \${domain} → \${getPoolName(poolKey)}\`, 'success');
         } catch (e) {
+            domainPoolMapping[domain] = oldPool;
+            updateDomainBindingTable();
             log('❌ 绑定失败', 'error');
         }
     }
@@ -4672,7 +5259,7 @@ function renderHTML(C, runtimeState = {}) {
     // 普通池：有效IP覆盖保存，失效IP移入垃圾桶
     // 垃圾桶：有效IP恢复到原来的库
     async function oneClickClean() {
-        const isTrash = currentPool === 'pool_trash';
+        const isTrash = currentPool === POOL_TRASH_KEY;
         
         log(\`🧹 开始一键洗库: \${getPoolName(currentPool)}\`, 'warn');
         cleaningPool = currentPool;
@@ -4700,8 +5287,7 @@ function renderHTML(C, runtimeState = {}) {
         }
 
         // 2. 检测（等待检测完成或中断）
-        // 垃圾桶复检时使用备用接口（如有）独立验证
-        const checkResult = await batchCheck(isTrash);
+        const checkResult = await batchCheck();
 
         // 3. 只有完全检测完成才自动保存，中断或放弃则不保存
         const content = document.getElementById('ip-input').value;
@@ -4777,7 +5363,7 @@ function renderHTML(C, runtimeState = {}) {
                 
                 await apiFetch('/api/save-pool', {
                     method: 'POST',
-                    body: JSON.stringify({ pool: trashContent, poolKey: 'pool_trash', mode: 'append' })
+                    body: JSON.stringify({ pool: trashContent, poolKey: POOL_TRASH_KEY, mode: 'append' })
                 });
                 
                 log(\`🗑️ 已将 \${invalidLines.length} 个失效IP移入垃圾桶\`, 'info');
@@ -4824,6 +5410,7 @@ function renderHTML(C, runtimeState = {}) {
             
             if (r.success) {
                 log(\`✅ 垃圾桶洗库完成: \${r.message}\`, 'success');
+                logRestoreSummary(r);
                 document.getElementById('ip-input').value = '';
                 updateFilterPreview();
                 // 刷新垃圾桶数量
@@ -4858,6 +5445,7 @@ function renderHTML(C, runtimeState = {}) {
             
             if (r.success) {
                 log(\`✅ \${r.message}\`, 'success');
+                logRestoreSummary(r);
                 loadCurrentPool();
                 updateFilterPreview();
             } else {
@@ -4866,6 +5454,14 @@ function renderHTML(C, runtimeState = {}) {
         } catch (e) {
             log('❌ 恢复失败', 'error');
         }
+    }
+
+    function logRestoreSummary(result) {
+        const entries = Array.isArray(result.restoredByPoolDisplay) ? result.restoredByPoolDisplay : [];
+        if (entries.length <= 1) return;
+        entries.forEach(item => {
+            log(\`   \${item.label || item.name}: \${item.count} 个\`, 'info');
+        });
     }
  
     function smartFilter(mode) {
